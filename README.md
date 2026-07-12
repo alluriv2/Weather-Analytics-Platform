@@ -78,15 +78,11 @@ PostgreSQL
 
 ## Current Weather
 
-> Replace this placeholder with a screenshot.
-
 ![Current Conditions](images/current_conditions.png)
 
 ---
 
 ## Historical Trends
-
-> Replace this placeholder with a screenshot.
 
 ![Historical Trends](images/trends.png)
 
@@ -94,8 +90,6 @@ PostgreSQL
 ---
 
 ## Kafka UI
-
-> Replace this placeholder with a screenshot.
 
 ![Kafka UI](images/kafka_ui.png)
 
