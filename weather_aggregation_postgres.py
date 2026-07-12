@@ -1,4 +1,6 @@
 import psycopg
+import time
+from datetime import datetime
 
 
 # ---------------------------------------------------------
@@ -7,6 +9,7 @@ import psycopg
 
 from config import POSTGRES_CONFIG
 
+AGGREGATION_INTERVAL_SECONDS = 300
 # ---------------------------------------------------------
 # Aggregate table
 # ---------------------------------------------------------
@@ -353,5 +356,20 @@ def main():
     )
 
 
+
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            main()
+        except Exception as exc:
+            print(
+                f"\nAggregation refresh failed: {exc}",
+                flush=True,
+            )
+
+        print(
+            f"\nSleeping for {AGGREGATION_INTERVAL_SECONDS} seconds...",
+            flush=True,
+        )
+
+        time.sleep(AGGREGATION_INTERVAL_SECONDS)

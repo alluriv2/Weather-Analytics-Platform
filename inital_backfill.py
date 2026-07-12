@@ -366,7 +366,7 @@ def backfill_station(conn, station_name, url):
 
         print(f"[{station_name}] Reading {filename}")
 
-        response = requests.get(file_url, timeout=30)
+        response = requests.get(file_url, timeout=120)
         response.raise_for_status()
 
         for line in response.text.splitlines():
