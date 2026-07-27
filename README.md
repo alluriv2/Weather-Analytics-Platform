@@ -89,10 +89,12 @@ From the repository root:
 ./scripts/bootstrap-local.sh
 ```
 
-The script securely prompts for the PostgreSQL password, builds the image,
-starts or reuses the independent database, creates Kubernetes configuration,
-runs full or incremental reconciliation, deploys every workload, waits for
-readiness, and opens the dashboard, API, and Kafka UI locally.
+The script reads PostgreSQL configuration from the Git-ignored `.env` file,
+builds the image, starts or reuses the independent database, validates its
+credentials, creates Kubernetes configuration, runs full or incremental
+reconciliation, deploys every workload, waits for readiness, and opens the
+dashboard, API, and Kafka UI locally. It prompts for a password only during
+first-time setup when neither `.env` credentials nor a database exist.
 
 Run without rebuilding the existing image:
 

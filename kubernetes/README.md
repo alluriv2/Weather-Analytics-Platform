@@ -41,9 +41,12 @@ The complete ordered workflow can be run from the repository root:
 ./scripts/bootstrap-local.sh
 ```
 
-The script is idempotent. An empty PostgreSQL folder triggers the complete
-historical backfill; an existing database triggers incremental reconciliation.
-The sections below document the individual operations performed by the script.
+The script is idempotent. It reads the database credential from the Git-ignored
+`.env` file and prompts only during first-time setup. An empty PostgreSQL folder
+triggers the complete historical backfill; an existing database triggers
+incremental reconciliation. If an existing database cannot be authenticated,
+the script exits before changing Kubernetes resources. The sections below
+document the individual operations performed by the script.
 
 ## Database lifecycle
 

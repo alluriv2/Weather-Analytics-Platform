@@ -49,14 +49,48 @@ fi
 
 kubectl cluster-info >/dev/null
 
-if [[ -z "${WEATHER_DB_PASSWORD:-}" ]]; then
-    read -r -s -p "Enter the local PostgreSQL password: " WEATHER_DB_PASSWORD
-    echo
+ENV_FILE="$ROOT_DIR/.env"
+POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
+POSTGRES_DATABASE_EXISTS=false
+
+if [[ -f "$POSTGRES_DATA_DIR/PG_VERSION" ]]; then
+    POSTGRES_DATABASE_EXISTS=true
 fi
 
+if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    set +a
+fi
+
+WEATHER_DB_PASSWORD="${POSTGRES_PASSWORD:-${WEATHER_DB_PASSWORD:-}}"
+
 if [[ -z "$WEATHER_DB_PASSWORD" ]]; then
-    echo "The PostgreSQL password cannot be empty." >&2
-    exit 1
+    if [[ "$POSTGRES_DATABASE_EXISTS" == true ]]; then
+        echo "PostgreSQL data exists, but POSTGRES_PASSWORD is missing from .env." >&2
+        echo "Restore the original password in $ENV_FILE; a new password will not unlock the existing database." >&2
+        exit 1
+    fi
+
+    read -r -s -p "First-time setup: choose the local PostgreSQL password: " WEATHER_DB_PASSWORD
+    echo
+
+    if [[ -z "$WEATHER_DB_PASSWORD" ]]; then
+        echo "The PostgreSQL password cannot be empty." >&2
+        exit 1
+    fi
+
+    umask 077
+    {
+        echo "POSTGRES_HOST=127.0.0.1"
+        echo "POSTGRES_PORT=5433"
+        echo "POSTGRES_DB=weather_db_dev"
+        echo "POSTGRES_USER=weather_user"
+        printf 'POSTGRES_PASSWORD=%q\n' "$WEATHER_DB_PASSWORD"
+    } >>"$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    echo "Saved the local database configuration in .env."
 fi
 
 export WEATHER_DB_PASSWORD
@@ -69,7 +103,10 @@ fi
 
 echo
 echo "==> Starting cluster-independent PostgreSQL"
-docker compose -f local/postgres-compose.yaml up -d
+docker compose \
+    --project-name local \
+    -f local/postgres-compose.yaml \
+    up -d
 
 postgres_health=""
 
@@ -95,6 +132,25 @@ if [[ "$postgres_health" != "healthy" ]]; then
 fi
 
 echo "PostgreSQL is healthy."
+
+if ! docker run \
+    --rm \
+    -e PGPASSWORD="$WEATHER_DB_PASSWORD" \
+    postgres:17 \
+    psql \
+    --host host.docker.internal \
+    --port 5433 \
+    --username weather_user \
+    --dbname weather_db_dev \
+    --no-password \
+    --command "SELECT 1;" \
+    >/dev/null 2>&1; then
+    echo "The POSTGRES_PASSWORD in .env does not authenticate to the existing database." >&2
+    echo "No Kubernetes workloads were changed. Restore the original password in .env." >&2
+    exit 1
+fi
+
+echo "PostgreSQL credentials are valid."
 
 echo
 echo "==> Creating Kubernetes configuration"
@@ -128,11 +184,53 @@ kubectl delete job initial-backfill \
 
 kubectl apply -f kubernetes/producer/initial-backfill-job.yaml
 
-kubectl wait \
-    --for=condition=complete \
-    job/initial-backfill \
-    --namespace "$NAMESPACE" \
-    --timeout=1800s
+reconciliation_finished=false
+
+for _ in {1..900}; do
+    succeeded="$(
+        kubectl get job initial-backfill \
+            --namespace "$NAMESPACE" \
+            --output jsonpath='{.status.succeeded}' \
+            2>/dev/null \
+            || true
+    )"
+    failed="$(
+        kubectl get job initial-backfill \
+            --namespace "$NAMESPACE" \
+            --output jsonpath='{.status.failed}' \
+            2>/dev/null \
+            || true
+    )"
+
+    if [[ "${succeeded:-0}" -ge 1 ]]; then
+        reconciliation_finished=true
+        break
+    fi
+
+    if [[ "${failed:-0}" -ge 1 ]]; then
+        echo "Startup reconciliation failed:" >&2
+        kubectl logs job/initial-backfill \
+            --namespace "$NAMESPACE" \
+            --all-containers=true \
+            --tail=100 \
+            >&2 \
+            || true
+        exit 1
+    fi
+
+    sleep 2
+done
+
+if [[ "$reconciliation_finished" != true ]]; then
+    echo "Startup reconciliation timed out after 30 minutes." >&2
+    kubectl logs job/initial-backfill \
+        --namespace "$NAMESPACE" \
+        --all-containers=true \
+        --tail=100 \
+        >&2 \
+        || true
+    exit 1
+fi
 
 kubectl logs job/initial-backfill \
     --namespace "$NAMESPACE" \
@@ -163,6 +261,13 @@ deployments=(
     weather-dashboard
     kafka-ui
 )
+
+# Environment variables sourced from Secrets and ConfigMaps are captured when a
+# pod starts. Restart existing deployments so a recovered or changed credential
+# is applied immediately instead of leaving old pods with stale values.
+kubectl rollout restart \
+    "${deployments[@]/#/deployment/}" \
+    --namespace "$NAMESPACE"
 
 for deployment in "${deployments[@]}"; do
     kubectl rollout status "deployment/$deployment" \
