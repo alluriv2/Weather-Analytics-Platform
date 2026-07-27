@@ -145,21 +145,6 @@ Available services
 
 ---
 
-# Skills Demonstrated
-
-- Real-Time Data Engineering
-- Apache Kafka
-- PostgreSQL
-- Incremental ETL Pipelines
-- Event-Driven Architecture
-- REST API Development
-- Interactive Dashboard Development
-- Docker
-- Configuration Management
-- End-to-End Data Pipeline Design
-
----
-
 # Future Enhancements
 
 - Azure deployment
