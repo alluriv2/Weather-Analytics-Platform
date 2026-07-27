@@ -33,6 +33,18 @@ kubectl config current-context
 
 For local deployment, this must print `docker-desktop`.
 
+## Automated deployment
+
+The complete ordered workflow can be run from the repository root:
+
+```bash
+./scripts/bootstrap-local.sh
+```
+
+The script is idempotent. An empty PostgreSQL folder triggers the complete
+historical backfill; an existing database triggers incremental reconciliation.
+The sections below document the individual operations performed by the script.
+
 ## Database lifecycle
 
 Start PostgreSQL from the repository root:

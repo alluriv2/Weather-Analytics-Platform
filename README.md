@@ -81,6 +81,33 @@ Prerequisites:
 - `docker`
 - `kubectl`
 
+### One-command bootstrap
+
+From the repository root:
+
+```bash
+./scripts/bootstrap-local.sh
+```
+
+The script securely prompts for the PostgreSQL password, builds the image,
+starts or reuses the independent database, creates Kubernetes configuration,
+runs full or incremental reconciliation, deploys every workload, waits for
+readiness, and opens the dashboard, API, and Kafka UI locally.
+
+Run without rebuilding the existing image:
+
+```bash
+./scripts/bootstrap-local.sh --skip-build
+```
+
+Deploy without starting local port-forward processes:
+
+```bash
+./scripts/bootstrap-local.sh --no-port-forward
+```
+
+### Manual deployment
+
 Select and verify the local cluster:
 
 ```bash
