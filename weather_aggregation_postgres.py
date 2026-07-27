@@ -9,7 +9,7 @@ from datetime import datetime
 
 from config import POSTGRES_CONFIG
 
-AGGREGATION_INTERVAL_SECONDS = 300
+AGGREGATION_INTERVAL_SECONDS = 60
 # ---------------------------------------------------------
 # Aggregate table
 # ---------------------------------------------------------
