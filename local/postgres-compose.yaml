@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: weather-postgres-local
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: weather_db_dev
+      POSTGRES_USER: weather_user
+      POSTGRES_PASSWORD: ${WEATHER_DB_PASSWORD:?Set WEATHER_DB_PASSWORD}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ../local-data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U weather_user -d weather_db_dev
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s

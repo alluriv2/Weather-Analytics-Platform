@@ -23,6 +23,7 @@ spark/
 
 # Local state
 producer_state.json
+local-data/
 
 # Kafka data
 kafka-storage/
@@ -36,3 +37,4 @@ kafka-storage/
 # Local Kubernetes secrets
 kubernetes/**/*secret*.yaml
 !kubernetes/**/*secret*.example.yaml
+.gitnexus

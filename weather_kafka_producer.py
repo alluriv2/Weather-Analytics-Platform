@@ -1,9 +1,9 @@
 import json
-import os
 import time
 from datetime import datetime
 from urllib.parse import urljoin
 
+import psycopg
 import requests
 from bs4 import BeautifulSoup
 from confluent_kafka import KafkaException, Producer
@@ -14,17 +14,13 @@ from config import (
     KAFKA_TOPIC,
     PRODUCER_POLL_SECONDS,
     STATION_URLS,
+    POSTGRES_CONFIG,
 )
-
-
-# ---------------------------------------------------------
-# Local state
-# ---------------------------------------------------------
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_PATH = os.getenv(
-    "PRODUCER_STATE_PATH",
-    os.path.join(BASE_DIR, "producer_state.json"),
+from ingestion_state import (
+    create_ingestion_state_table,
+    database_latest,
+    load_watermarks,
+    record_producer_watermark,
 )
 
 
@@ -54,56 +50,42 @@ def parse_dt(raw_dt):
 # ---------------------------------------------------------
 
 def load_state():
-    if not os.path.exists(STATE_PATH):
-        raise FileNotFoundError(
-            f"{STATE_PATH} not found. "
-            "Run initial_backfill.py first."
-        )
+    with psycopg.connect(**POSTGRES_CONFIG) as conn:
+        create_ingestion_state_table(conn)
+        watermarks = load_watermarks(conn)
+        state = {}
 
-    with open(
-        STATE_PATH,
-        "r",
-        encoding="utf-8",
-    ) as file:
-        raw_state = json.load(file)
+        for station in STATION_URLS:
+            station_state = watermarks.get(station, {})
+            producer_latest = station_state.get(
+                "producer_latest_ts"
+            )
+            stored_latest = database_latest(conn, station)
 
-    return {
-        station: parse_dt(timestamp)
-        if timestamp
-        else None
-        for station, timestamp in raw_state.items()
-    }
+            candidates = [
+                value
+                for value in (
+                    producer_latest,
+                    stored_latest,
+                )
+                if value is not None
+            ]
+
+            state[station] = max(candidates) if candidates else None
+
+        return state
 
 
 def save_state(state):
-    serializable_state = {
-        station: timestamp.isoformat()
-        if timestamp
-        else None
-        for station, timestamp in state.items()
-    }
-
-    temporary_path = STATE_PATH + ".tmp"
-    state_directory = os.path.dirname(STATE_PATH)
-
-    if state_directory:
-        os.makedirs(state_directory, exist_ok=True)
-
-    with open(
-        temporary_path,
-        "w",
-        encoding="utf-8",
-    ) as file:
-        json.dump(
-            serializable_state,
-            file,
-            indent=2,
-        )
-
-    os.replace(
-        temporary_path,
-        STATE_PATH,
-    )
+    with psycopg.connect(**POSTGRES_CONFIG) as conn:
+        create_ingestion_state_table(conn)
+        for station, timestamp in state.items():
+            if timestamp is not None:
+                record_producer_watermark(
+                    conn,
+                    station,
+                    timestamp,
+                )
 
 
 # ---------------------------------------------------------
@@ -333,8 +315,8 @@ def run_once():
         save_state(state)
 
         print(
-            f"\nSaved updated producer "
-            f"checkpoint to {STATE_PATH}"
+            "\nSaved producer watermarks "
+            "to PostgreSQL."
         )
     else:
         print(
@@ -365,8 +347,8 @@ def main():
         except (
             requests.RequestException,
             KafkaException,
+            psycopg.Error,
             ValueError,
-            FileNotFoundError,
             json.JSONDecodeError,
         ) as exc:
             print(

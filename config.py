@@ -166,3 +166,10 @@ PRODUCER_POLL_SECONDS = int(
         "120",
     )
 )
+
+RECONCILIATION_LOOKBACK_DAYS = int(
+    os.getenv(
+        "RECONCILIATION_LOOKBACK_DAYS",
+        "2",
+    )
+)

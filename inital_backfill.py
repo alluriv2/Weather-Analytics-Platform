@@ -1,8 +1,7 @@
 import json
 
-import os
-
-from datetime import datetime
+from datetime import datetime, timedelta
+from urllib.parse import urljoin
 
 import psycopg
 
@@ -19,17 +18,14 @@ from config import (
     BACKFILL_BATCH_SIZE,
     POSTGRES_CONFIG,
     RESET_WEATHER_TABLE,
+    RECONCILIATION_LOOKBACK_DAYS,
     STATION_URLS,
 )
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-STATE_PATH = os.getenv(
-    "PRODUCER_STATE_PATH",
-    os.path.join(
-        BASE_DIR,
-        "producer_state.json",
-    ),
+from ingestion_state import (
+    create_ingestion_state_table,
+    database_latest,
+    load_watermarks,
+    record_reconciliation,
 )
 
 # ---------------------------------------------------------
@@ -75,6 +71,35 @@ def list_server_files(url):
     ]
 
     return sorted(files)
+
+
+def latest_source_timestamp(url, files):
+    if not files:
+        return None
+
+    response = requests.get(
+        urljoin(url, files[-1]),
+        timeout=120,
+    )
+    response.raise_for_status()
+
+    latest_dt = None
+
+    for line in response.text.splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        row_dt = parse_dt(obj.get("dt"))
+
+        if row_dt is not None and (
+            latest_dt is None
+            or row_dt > latest_dt
+        ):
+            latest_dt = row_dt
+
+    return latest_dt
 
 
 # ---------------------------------------------------------
@@ -353,19 +378,68 @@ def upsert_batch(conn, records):
 # Station backfill
 # ---------------------------------------------------------
 
-def backfill_station(conn, station_name, url):
+def backfill_station(
+    conn,
+    station_name,
+    url,
+    existing_latest,
+    known_upstream_latest,
+):
     print(f"\n[{station_name}] Listing files...")
 
     files = list_server_files(url)
 
     print(f"[{station_name}] Found {len(files)} files.")
 
-    latest_dt = None
+    source_latest = latest_source_timestamp(url, files)
+
+    known_latest_values = [
+        value
+        for value in (
+            source_latest,
+            known_upstream_latest,
+        )
+        if value is not None
+    ]
+
+    if (
+        existing_latest is not None
+        and known_latest_values
+        and existing_latest >= max(known_latest_values)
+    ):
+        print(
+            f"[{station_name}] No gap: database "
+            f"{existing_latest} is current with source "
+            f"{source_latest} and pipeline "
+            f"{known_upstream_latest}."
+        )
+        return source_latest
+
+    if existing_latest is not None:
+        start_date = (
+            existing_latest
+            - timedelta(days=RECONCILIATION_LOOKBACK_DAYS)
+        ).strftime("%Y%m%d")
+        files = [
+            filename
+            for filename in files
+            if filename[:8] >= start_date
+        ]
+        print(
+            f"[{station_name}] Gap detected; reconciling from "
+            f"{start_date}; checking {len(files)} files."
+        )
+    else:
+        print(
+            f"[{station_name}] Database is empty; "
+            "running the complete initial backfill."
+        )
+
     processed_count = 0
     batch = []
 
     for filename in files:
-        file_url = url + filename
+        file_url = urljoin(url, filename)
 
         print(f"[{station_name}] Reading {filename}")
 
@@ -388,11 +462,14 @@ def backfill_station(conn, station_name, url):
             if record is None:
                 continue
 
+            if (
+                source_latest is None
+                or record["dt"] > source_latest
+            ):
+                source_latest = record["dt"]
+
             batch.append(record)
             processed_count += 1
-
-            if latest_dt is None or record["dt"] > latest_dt:
-                latest_dt = record["dt"]
 
             if len(batch) >= BACKFILL_BATCH_SIZE:
                 try:
@@ -420,35 +497,12 @@ def backfill_station(conn, station_name, url):
         f"[{station_name}] Backfill complete. "
         f"Records processed: {processed_count:,}"
     )
-    print(f"[{station_name}] Latest timestamp: {latest_dt}")
+    print(
+        f"[{station_name}] Source latest timestamp: "
+        f"{source_latest}"
+    )
 
-    return latest_dt
-
-
-# ---------------------------------------------------------
-# Producer checkpoint
-# ---------------------------------------------------------
-
-def save_producer_state(state):
-    serializable_state = {
-        station: timestamp.isoformat() if timestamp else None
-        for station, timestamp in state.items()
-    }
-
-    temporary_path = STATE_PATH + ".tmp"
-    state_directory = os.path.dirname(STATE_PATH)
-
-    if state_directory:
-        os.makedirs(state_directory, exist_ok=True)
-
-    # Write to a temporary file first so a failed write does not leave
-    # producer_state.json partially corrupted.
-    with open(temporary_path, "w", encoding="utf-8") as file:
-        json.dump(serializable_state, file, indent=2)
-
-    os.replace(temporary_path, STATE_PATH)
-
-    print(f"\nSaved producer checkpoint to {STATE_PATH}")
+    return source_latest
 
 
 # ---------------------------------------------------------
@@ -456,8 +510,6 @@ def save_producer_state(state):
 # ---------------------------------------------------------
 
 def main():
-    producer_state = {}
-
     try:
         with psycopg.connect(**POSTGRES_CONFIG) as conn:
             print(
@@ -467,17 +519,66 @@ def main():
             )
 
             create_weather_table(conn)
+            create_ingestion_state_table(conn)
+            watermarks = load_watermarks(conn)
 
             for station_name, url in STATION_URLS.items():
-                latest_dt = backfill_station(
+                existing_latest = database_latest(
+                    conn,
+                    station_name,
+                )
+                station_state = watermarks.get(
+                    station_name,
+                    {},
+                )
+                upstream_values = [
+                    value
+                    for value in (
+                        station_state.get(
+                            "producer_latest_ts"
+                        ),
+                        station_state.get(
+                            "consumer_latest_ts"
+                        ),
+                    )
+                    if value is not None
+                ]
+                known_upstream_latest = (
+                    max(upstream_values)
+                    if upstream_values
+                    else None
+                )
+
+                source_latest = backfill_station(
                     conn=conn,
                     station_name=station_name,
                     url=url,
+                    existing_latest=existing_latest,
+                    known_upstream_latest=(
+                        known_upstream_latest
+                    ),
                 )
 
-                producer_state[station_name] = latest_dt
-
-            save_producer_state(producer_state)
+                stored_latest = database_latest(
+                    conn,
+                    station_name,
+                )
+                status = record_reconciliation(
+                    conn=conn,
+                    station=station_name,
+                    source_latest=source_latest,
+                    database_latest_ts=stored_latest,
+                    producer_latest=station_state.get(
+                        "producer_latest_ts"
+                    ),
+                    consumer_latest=station_state.get(
+                        "consumer_latest_ts"
+                    ),
+                )
+                print(
+                    f"[{station_name}] Reconciliation status: "
+                    f"{status}; database latest: {stored_latest}"
+                )
 
             with conn.cursor() as cur:
                 cur.execute("""

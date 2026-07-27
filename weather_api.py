@@ -57,6 +57,7 @@ def landing_page():
         "available_endpoints": [
             "/latest",
             "/history",
+            "/ingestion-status",
             "/health",
             "/docs",
         ],
@@ -84,6 +85,67 @@ def health():
             status_code=503,
             detail=f"Database unavailable: {exc}",
         )
+
+
+@app.get("/ingestion-status")
+def ingestion_status():
+    """
+    Return durable source, producer, consumer, and database watermarks.
+
+    ``requires_backfill`` becomes true when the database is behind any
+    known upstream watermark. The reconciler repairs that condition.
+    """
+    query = """
+        SELECT
+            station,
+            source_latest_ts,
+            producer_latest_ts,
+            consumer_latest_ts,
+            database_latest_ts,
+            kafka_partition,
+            kafka_offset,
+            status,
+            last_reconciliation_at,
+            GREATEST(
+                EXTRACT(EPOCH FROM (
+                    source_latest_ts - database_latest_ts
+                )),
+                0
+            )::BIGINT AS source_database_gap_seconds,
+            GREATEST(
+                EXTRACT(EPOCH FROM (
+                    producer_latest_ts - consumer_latest_ts
+                )),
+                0
+            )::BIGINT AS producer_consumer_gap_seconds,
+            (
+                database_latest_ts IS NULL
+                OR database_latest_ts < GREATEST(
+                    source_latest_ts,
+                    producer_latest_ts,
+                    consumer_latest_ts
+                )
+            ) AS requires_backfill
+        FROM ingestion_state
+        ORDER BY station;
+    """
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                rows = cur.fetchall()
+
+    except psycopg.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ingestion status query failed: {exc}",
+        )
+
+    return {
+        "reconciliation_schedule": "every 5 minutes",
+        "stations": rows,
+    }
 
 
 @app.get("/latest")

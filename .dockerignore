@@ -8,3 +8,4 @@ spark/
 kafka-storage/
 producer_state.json
 previous-version/
+local-data/

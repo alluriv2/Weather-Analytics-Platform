@@ -22,11 +22,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
-        fsGroup: 10001
-        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: initial-backfill
-          image: weather-platform:0.4.0
+          image: weather-platform:0.5.2
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -50,13 +48,8 @@ spec:
               cpu: "1"
               memory: 1Gi
           volumeMounts:
-            - name: producer-state
-              mountPath: /state
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: producer-state
-          persistentVolumeClaim:
-            claimName: producer-state
         - name: tmp
           emptyDir: {}

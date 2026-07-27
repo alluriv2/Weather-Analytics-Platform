@@ -4,12 +4,10 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - configmap.yaml
-  - postgres/service.yaml
-  - postgres/statefulset.yaml
   - kafka/service.yaml
   - kafka/statefulset.yaml
-  - producer/state-pvc.yaml
   - producer/initial-backfill-job.yaml
+  - reconciler/cronjob.yaml
   - producer/deployment.yaml
   - consumer/deployment.yaml
   - aggregator/deployment.yaml

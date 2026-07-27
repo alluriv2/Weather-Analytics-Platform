@@ -26,11 +26,9 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
-        fsGroup: 10001
-        fsGroupChangePolicy: OnRootMismatch
       containers:
         - name: producer
-          image: weather-platform:0.4.0
+          image: weather-platform:0.5.2
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -47,6 +45,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: weather-config
+            - secretRef:
+                name: postgres-credentials
           resources:
             requests:
               cpu: 100m
@@ -55,13 +55,8 @@ spec:
               cpu: 500m
               memory: 512Mi
           volumeMounts:
-            - name: producer-state
-              mountPath: /state
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: producer-state
-          persistentVolumeClaim:
-            claimName: producer-state
         - name: tmp
           emptyDir: {}

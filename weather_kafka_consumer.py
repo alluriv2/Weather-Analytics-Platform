@@ -15,6 +15,10 @@ from config import (
     KAFKA_TOPIC,
     KAFKA_CONSUMER_GROUP,
 )
+from ingestion_state import (
+    create_ingestion_state_table,
+    record_consumer_watermark,
+)
 
 
 # ---------------------------------------------------------
@@ -311,7 +315,12 @@ WHERE EXCLUDED.dt >= weather_latest.dt;
 """
 
 
-def write_weather_record(conn, record):
+def write_weather_record(
+    conn,
+    record,
+    partition,
+    offset,
+):
     """
     Write the raw observation and latest-state row in one PostgreSQL
     transaction.
@@ -320,6 +329,13 @@ def write_weather_record(conn, record):
         with conn.cursor() as cur:
             cur.execute(WEATHER_UPSERT_SQL, record)
             cur.execute(LATEST_UPSERT_SQL, record)
+            record_consumer_watermark(
+                cur=cur,
+                station=record["station"],
+                timestamp=record["dt"],
+                partition=partition,
+                offset=offset,
+            )
 
         conn.commit()
 
@@ -349,6 +365,7 @@ def main():
     try:
         with psycopg.connect(**POSTGRES_CONFIG) as conn:
             create_latest_table(conn)
+            create_ingestion_state_table(conn)
 
             while True:
                 msg = consumer.poll(1.0)
@@ -388,7 +405,12 @@ def main():
                         record["pressure_hpa"] = None
 
                     # Raw and latest writes are committed together.
-                    write_weather_record(conn, record)
+                    write_weather_record(
+                        conn=conn,
+                        record=record,
+                        partition=msg.partition(),
+                        offset=msg.offset(),
+                    )
 
                     # Commit the Kafka offset only after PostgreSQL commits.
                     # A crash between these commits can replay a message, so

@@ -7,68 +7,73 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-REST-009688)
 ![Plotly Dash](https://img.shields.io/badge/Plotly-Dash-purple)
 
-The current release is a Kubernetes-based, real-time weather analytics
-platform. It collects observations from remote weather stations, streams new
-events through Kafka, stores current and historical data in PostgreSQL,
-precomputes analytical windows, exposes a FastAPI service, and presents the
-results in a Plotly Dash dashboard.
+A real-time weather analytics platform with durable, cluster-independent local
+PostgreSQL storage. Kubernetes runs Kafka and the application services, while
+the database remains available when the Kubernetes cluster or namespace is
+stopped, deleted, or recreated.
 
-## Current architecture
+## Architecture
 
 ```text
-Weather stations
-       │
-       ▼
-Python producer ──► Apache Kafka ──► Python consumer
-                                           │
-                                           ▼
-                                      PostgreSQL
-                                           │
-                         ┌─────────────────┴─────────────────┐
-                         ▼                                   ▼
-                 Aggregation worker                    FastAPI API
-                                                            │
-                                                            ▼
-                                                     Dash dashboard
+Remote weather stations
+          │
+          ▼
+Producer ─────► Kafka ─────► Consumer
+   │                             │
+   │                             ▼
+   └── durable watermarks ─► PostgreSQL ◄── Reconciler
+                                  │
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+              Aggregator                  FastAPI API
+                                                │
+                                                ▼
+                                         Dash dashboard
 ```
 
-Kubernetes manages the services, health checks, restarts, configuration, and
-persistent storage. The Python application containers run as a non-root user
-with read-only root filesystems.
+PostgreSQL runs separately through Docker Compose and stores its files in
+`local-data/postgres/`, which is excluded from Git. Kubernetes pods connect to
+it through `host.docker.internal:5433`.
 
-## Components
+## Recovery model
 
-| Component | Purpose |
-|---|---|
-| Initial backfill Job | Loads the historical station dataset |
-| Producer Deployment | Publishes new observations to Kafka |
-| Kafka StatefulSet | Provides durable event streaming |
-| Consumer Deployment | Writes events to PostgreSQL with committed offsets |
-| PostgreSQL StatefulSet | Stores observations and aggregates persistently |
-| Aggregator Deployment | Refreshes day, week, month, and year windows |
-| FastAPI Deployment | Serves health, latest, and history endpoints |
-| Dash Deployment | Provides the interactive weather dashboard |
-| Kafka UI Deployment | Displays broker, topic, and consumer information |
+The `ingestion_state` database table records, per station:
+
+- Latest timestamp available at the remote source
+- Latest timestamp published by the producer
+- Latest timestamp processed by the consumer
+- Latest timestamp stored in PostgreSQL
+- Kafka partition and offset
+- Reconciliation status and time
+
+The consumer commits a Kafka offset only after its PostgreSQL transaction
+succeeds. The `/ingestion-status` API reports timestamp gaps and whether a
+backfill is required.
+
+A Kubernetes CronJob runs every five minutes. On an empty database it performs
+the complete initial backfill. On an existing database it rechecks only the
+recent source files and idempotently restores missing or delayed records.
 
 ## Repository layout
 
 ```text
 .
-├── dashboard/                # Plotly Dash application
-├── images/                   # README screenshots
-├── kubernetes/               # Current Kubernetes deployment
-├── previous-version/         # Archived version 1 (Docker Compose)
-├── Dockerfile                # Shared Python application image
-├── config.py
+├── dashboard/                  # Plotly Dash application
+├── kubernetes/                 # Kafka and application workloads
+├── local/
+│   └── postgres-compose.yaml   # Cluster-independent PostgreSQL
+├── local-data/                 # Created locally; never committed
+├── previous-version/           # Archived version 1
+├── Dockerfile
+├── ingestion_state.py
 ├── inital_backfill.py
-├── requirements.txt
-├── weather_aggregation_postgres.py
-├── weather_api.py
+├── weather_kafka_producer.py
 ├── weather_kafka_consumer.py
-└── weather_kafka_producer.py
+├── weather_aggregation_postgres.py
+└── weather_api.py
 ```
 
-## Run the current release locally
+## Local deployment
 
 Prerequisites:
 
@@ -76,76 +81,123 @@ Prerequisites:
 - `docker`
 - `kubectl`
 
-Build the application image:
+Select and verify the local cluster:
 
 ```bash
-docker build -t weather-platform:0.4.0 .
+kubectl config use-context docker-desktop
+kubectl cluster-info
 ```
 
-Create the namespace and configuration:
+Build the shared application image:
 
 ```bash
-kubectl apply -f kubernetes/namespace.yaml
-kubectl apply -f kubernetes/configmap.yaml
+docker build -t weather-platform:0.5.2 .
 ```
 
-Create the database credentials directly in Kubernetes. Do not commit the
-password or a generated Secret file:
+Choose the local database password once for this installation:
 
 ```bash
 read -s "WEATHER_DB_PASSWORD?Enter the PostgreSQL password: "
 echo
+```
+
+Start the cluster-independent database:
+
+```bash
+WEATHER_DB_PASSWORD="$WEATHER_DB_PASSWORD" \
+  docker compose -f local/postgres-compose.yaml up -d
+```
+
+Create Kubernetes configuration and give the pods the same credential:
+
+```bash
+kubectl apply -f kubernetes/namespace.yaml
+kubectl apply -f kubernetes/configmap.yaml
+
 kubectl create secret generic postgres-credentials \
   --namespace weather-dev \
   --from-literal=POSTGRES_USER=weather_user \
   --from-literal=POSTGRES_PASSWORD="$WEATHER_DB_PASSWORD"
+
 unset WEATHER_DB_PASSWORD
 ```
 
-Deploy the platform:
+Deploy Kafka and wait for it:
 
 ```bash
-kubectl apply -k kubernetes
+kubectl apply -f kubernetes/kafka
+kubectl rollout status statefulset/kafka \
+  --namespace weather-dev \
+  --timeout=300s
 ```
 
-Check its status:
+Run startup reconciliation:
 
 ```bash
-kubectl get deployments,statefulsets,pods,pvc -n weather-dev
+kubectl apply -f kubernetes/producer/initial-backfill-job.yaml
+kubectl wait \
+  --for=condition=complete \
+  job/initial-backfill \
+  --namespace weather-dev \
+  --timeout=1800s
+```
+
+For a new clone, this performs the full backfill. If `local-data/postgres`
+already contains a database, it performs only incremental reconciliation.
+
+Deploy the continuously running workloads:
+
+```bash
+kubectl apply -f kubernetes/reconciler/cronjob.yaml
+kubectl apply -f kubernetes/producer/deployment.yaml
+kubectl apply -f kubernetes/consumer/deployment.yaml
+kubectl apply -f kubernetes/aggregator/deployment.yaml
+kubectl apply -f kubernetes/api
+kubectl apply -f kubernetes/dashboard
+kubectl apply -f kubernetes/kafka-ui
+```
+
+Verify:
+
+```bash
+kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
+  --namespace weather-dev
 ```
 
 Open the dashboard:
 
 ```bash
-kubectl port-forward -n weather-dev service/weather-dashboard 18050:8050
+kubectl port-forward \
+  --namespace weather-dev \
+  service/weather-dashboard \
+  18050:8050
 ```
 
-Then visit <http://127.0.0.1:18050>.
+Visit <http://127.0.0.1:18050>.
 
-Open Kafka UI in a separate terminal:
+Optional local endpoints:
 
-```bash
-kubectl port-forward -n weather-dev service/kafka-ui 18080:8080
-```
+- API: port-forward `service/weather-api 18000:8000`
+- API documentation: <http://127.0.0.1:18000/docs>
+- Ingestion status: <http://127.0.0.1:18000/ingestion-status>
+- Kafka UI: port-forward `service/kafka-ui 18080:8080`
 
-Then visit <http://127.0.0.1:18080>.
+See [the Kubernetes runbook](kubernetes/README.md) for validation, recovery,
+restart, and shutdown details.
 
-For first-time deployment order, initial backfill, verification, restart,
-recovery, and shutdown procedures, read the
-[complete Kubernetes runbook](kubernetes/README.md).
+## Persistence guarantee
+
+Deleting `weather-dev` deletes Kafka and the Kubernetes workloads, but it does
+not delete PostgreSQL data in `local-data/postgres/`.
+
+Do not delete `local-data/postgres/` or run Docker Compose with volume/data
+removal unless permanent database loss is intended. Independent storage still
+requires backups for protection from disk failure or accidental deletion.
 
 ## Previous version
 
-The original Docker Compose implementation is preserved in
-[`previous-version/`](previous-version/README.md). It is retained for reference
-and is not the current deployment method.
-
-## Data and secrets
-
-The repository intentionally excludes `.env` files, database data, Kafka data,
-producer checkpoints, and Kubernetes Secret manifests. Runtime data belongs in
-Kubernetes persistent volumes, and credentials must be created locally in the
-cluster.
+The original implementation is retained in
+[`previous-version/`](previous-version/README.md) for reference.
 
 ## License
 
