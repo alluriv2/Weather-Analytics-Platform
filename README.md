@@ -43,16 +43,7 @@ Remote weather stations
 
 ## Storage and recovery model
 
-PostgreSQL runs in its own Docker container and stores its files here:
-
-```text
-local-data/postgres/
-```
-
-Both `local-data/` and `.env` are excluded from Git. Kubernetes accesses the
-database through `host.docker.internal:5433`.
-
-The database is not stored in a Kubernetes PersistentVolume. Consequently:
+PostgreSQL runs independently from the Kubernetes workloads. Consequently:
 
 - Stopping Kubernetes stops ingestion and the dashboard but does not erase the
   database.
@@ -60,8 +51,6 @@ The database is not stored in a Kubernetes PersistentVolume. Consequently:
   Kafka data but does not erase the database.
 - Starting the platform again reuses the existing database and repairs the
   interval missed while Kubernetes was unavailable.
-- Deleting `local-data/postgres/` permanently deletes the local weather
-  database.
 
 The `ingestion_state` table tracks source, producer, consumer, and database
 timestamps for every station. Kafka offsets are committed only after the
@@ -99,22 +88,20 @@ Start the complete platform:
 ./scripts/bootstrap-local.sh
 ```
 
-On the first run, the script asks you to choose a PostgreSQL password once. It
-saves that password in the local, Git-ignored `.env` file with restricted file
-permissions.
+The first run completes the local database setup. Later starts reuse it
+automatically.
 
 The script then performs these operations in order:
 
 1. Builds `weather-platform:0.5.3`.
-2. Creates `local-data/postgres/`.
-3. Starts PostgreSQL and validates the configured password.
-4. Creates the `weather-dev` Kubernetes namespace and configuration.
-5. Starts Kafka.
-6. Detects the empty database and runs the complete historical backfill.
-7. Starts the producer, consumer, reconciler, aggregator, API, dashboard, and
+2. Creates and starts the persistent PostgreSQL database.
+3. Creates the `weather-dev` Kubernetes namespace and configuration.
+4. Starts Kafka.
+5. Detects the empty database and runs the complete historical backfill.
+6. Starts the producer, consumer, reconciler, aggregator, API, dashboard, and
    Kafka UI.
-8. Waits for every deployment to become ready.
-9. Opens local port-forward processes.
+7. Waits for every deployment to become ready.
+8. Opens the local service addresses.
 
 The first historical backfill takes longer than later starts. Do not close the
 terminal until the script reports:
@@ -145,10 +132,8 @@ kubectl config use-context docker-desktop
 ./scripts/bootstrap-local.sh
 ```
 
-The script reads the existing password from `.env`; it does not ask for a new
-one. It starts or reuses PostgreSQL, recreates missing Kubernetes resources,
-compares timestamps, backfills only missing records, and resumes live
-processing.
+The script reuses PostgreSQL, recreates missing Kubernetes resources, compares
+timestamps, backfills only missing records, and resumes live processing.
 
 Use the existing image to avoid rebuilding it:
 
@@ -204,7 +189,7 @@ curl http://127.0.0.1:18000/health
 ## Normal shutdown
 
 Stopping Kubernetes in Docker Desktop stops the Kubernetes applications. The
-database files remain in `local-data/postgres/`.
+independent PostgreSQL database remains available for the next start.
 
 To stop only PostgreSQL:
 
@@ -222,37 +207,6 @@ kubectl delete namespace weather-dev
 
 The next bootstrap recreates the namespace and performs incremental
 reconciliation against the retained database.
-
-## Completely reset the local installation
-
-> **Warning:** The following commands permanently delete the local PostgreSQL
-> database and its credentials. The next bootstrap behaves like a first run and
-> performs the complete historical backfill.
-
-Run these commands only from the repository root:
-
-```bash
-kubectl delete namespace weather-dev --ignore-not-found
-docker rm -f weather-postgres-local
-rm -rf local-data
-rm -f .env
-```
-
-This reset affects only local runtime state. It does not change tracked source
-files or Git history.
-
-## Password behavior
-
-The password lifecycle is intentionally strict:
-
-- No `.env` and no database: prompt once and create both.
-- `.env` and no database: create the database using the saved password.
-- `.env` and existing database: validate and reuse the saved password.
-- Existing database but no `.env` password: stop immediately rather than
-  inventing a password that cannot open the database.
-- Incorrect `.env` password: stop before changing Kubernetes workloads.
-
-Never commit `.env`.
 
 ## Troubleshooting
 
@@ -295,12 +249,7 @@ curl http://127.0.0.1:18000/ingestion-status
 ```
 
 Immediately after first startup, a station can briefly show `Unavailable` until
-its first live event reaches the `weather_latest` table.
-
-### PostgreSQL authentication fails
-
-Do not enter or create a replacement password for an existing database. Restore
-the original `POSTGRES_PASSWORD` value in `.env`, then run the bootstrap again.
+its first live reading is processed.
 
 ### A startup reconciliation job fails
 
@@ -320,7 +269,6 @@ The defaults are:
 - Dashboard: `18050`
 - API: `18000`
 - Kafka UI: `18080`
-- PostgreSQL: `5433`
 
 Stop the process already using the required port, or run with
 `--no-port-forward` and create your own port-forward mappings.
@@ -343,7 +291,6 @@ Stop the process already using the required port, or run with
 │   └── postgres-compose.yaml          # Cluster-independent PostgreSQL
 ├── scripts/
 │   └── bootstrap-local.sh             # Complete local deployment
-├── local-data/                        # Generated locally; never committed
 ├── previous-version/                  # Archived original implementation
 ├── Dockerfile                         # Shared Python application image
 ├── ingestion_state.py                 # Watermark and offset management
