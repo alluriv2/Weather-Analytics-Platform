@@ -2,7 +2,7 @@ import json
 from datetime import datetime
 
 import psycopg
-from confluent_kafka import Consumer, KafkaException
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
 
 # ---------------------------------------------------------
@@ -374,6 +374,15 @@ def main():
                     continue
 
                 if msg.error():
+                    if (
+                        msg.error().code()
+                        == KafkaError.UNKNOWN_TOPIC_OR_PART
+                    ):
+                        print(
+                            "Kafka topic is not ready yet; "
+                            "waiting for the producer to create it."
+                        )
+                        continue
                     raise KafkaException(msg.error())
 
                 try:

@@ -91,7 +91,7 @@ kubectl cluster-info
 Build the shared application image:
 
 ```bash
-docker build -t weather-platform:0.5.2 .
+docker build -t weather-platform:0.5.3 .
 ```
 
 Choose the local database password once for this installation:

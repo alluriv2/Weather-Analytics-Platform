@@ -67,7 +67,7 @@ unset WEATHER_DB_PASSWORD
 Build the immutable local image version:
 
 ```bash
-docker build -t weather-platform:0.5.2 .
+docker build -t weather-platform:0.5.3 .
 ```
 
 Start Kafka:

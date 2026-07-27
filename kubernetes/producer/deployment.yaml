@@ -28,7 +28,7 @@ spec:
         runAsGroup: 10001
       containers:
         - name: producer
-          image: weather-platform:0.5.2
+          image: weather-platform:0.5.3
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
