@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: weather-config
+  namespace: weather-dev
+  labels:
+    app.kubernetes.io/part-of: weather-platform
+data:
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: weather_db_dev
+
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  KAFKA_TOPIC: raw_weather_events_dev
+  KAFKA_CLIENT_ID: weather-producer-dev
+  KAFKA_CONSUMER_GROUP: weather-postgres-consumer-dev
+  KAFKA_PARTITION: "0"
+  KAFKA_START_OFFSET: "0"
+
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+  API_BASE_URL: http://weather-api:8000
+
+  DASH_HOST: "0.0.0.0"
+  DASH_PORT: "8050"
+
+  PRODUCER_POLL_SECONDS: "120"
+  PRODUCER_STATE_PATH: /state/producer_state.json
+  RESET_WEATHER_TABLE: "false"

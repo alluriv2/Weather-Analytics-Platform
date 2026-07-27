@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-consumer
+  namespace: weather-dev
+  labels:
+    app.kubernetes.io/name: weather-consumer
+    app.kubernetes.io/component: consumer
+    app.kubernetes.io/part-of: weather-platform
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-consumer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weather-consumer
+        app.kubernetes.io/component: consumer
+        app.kubernetes.io/part-of: weather-platform
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: consumer
+          image: weather-platform:0.4.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - python
+            - weather_kafka_consumer.py
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: weather-config
+            - secretRef:
+                name: postgres-credentials
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

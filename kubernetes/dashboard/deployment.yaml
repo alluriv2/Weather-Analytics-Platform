@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-dashboard
+  namespace: weather-dev
+  labels:
+    app.kubernetes.io/name: weather-dashboard
+    app.kubernetes.io/component: dashboard
+    app.kubernetes.io/part-of: weather-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-dashboard
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weather-dashboard
+        app.kubernetes.io/component: dashboard
+        app.kubernetes.io/part-of: weather-platform
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+      containers:
+        - name: dashboard
+          image: weather-platform:0.4.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - python
+            - -c
+            - >-
+              from dashboard.app import app;
+              from config import DASH_HOST, DASH_PORT;
+              app.run(host=DASH_HOST, port=DASH_PORT, debug=False)
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: weather-config
+          ports:
+            - name: http
+              containerPort: 8050
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -22,7 +22,10 @@ from config import (
 # ---------------------------------------------------------
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_PATH = os.path.join(BASE_DIR, "producer_state.json")
+STATE_PATH = os.getenv(
+    "PRODUCER_STATE_PATH",
+    os.path.join(BASE_DIR, "producer_state.json"),
+)
 
 
 # ---------------------------------------------------------
@@ -81,6 +84,10 @@ def save_state(state):
     }
 
     temporary_path = STATE_PATH + ".tmp"
+    state_directory = os.path.dirname(STATE_PATH)
+
+    if state_directory:
+        os.makedirs(state_directory, exist_ok=True)
 
     with open(
         temporary_path,

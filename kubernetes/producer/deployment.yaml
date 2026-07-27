@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weather-producer
+  namespace: weather-dev
+  labels:
+    app.kubernetes.io/name: weather-producer
+    app.kubernetes.io/component: producer
+    app.kubernetes.io/part-of: weather-platform
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: weather-producer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: weather-producer
+        app.kubernetes.io/component: producer
+        app.kubernetes.io/part-of: weather-platform
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: producer
+          image: weather-platform:0.4.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - python
+            - weather_kafka_producer.py
+          env:
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          envFrom:
+            - configMapRef:
+                name: weather-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: producer-state
+              mountPath: /state
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: producer-state
+          persistentVolumeClaim:
+            claimName: producer-state
+        - name: tmp
+          emptyDir: {}

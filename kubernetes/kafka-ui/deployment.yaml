@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-ui
+  namespace: weather-dev
+  labels:
+    app.kubernetes.io/name: kafka-ui
+    app.kubernetes.io/component: kafka-observability
+    app.kubernetes.io/part-of: weather-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kafka-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kafka-ui
+        app.kubernetes.io/component: kafka-observability
+        app.kubernetes.io/part-of: weather-platform
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: kafka-ui
+          image: provectuslabs/kafka-ui:v0.7.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_CLUSTERS_0_NAME
+              value: weather-dev
+            - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
+              value: kafka:9092
+            - name: KAFKA_CLUSTERS_0_READONLY
+              value: "true"
+            - name: JAVA_OPTS
+              value: -Xms256m -Xmx512m
+          ports:
+            - name: http
+              containerPort: 8080
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+

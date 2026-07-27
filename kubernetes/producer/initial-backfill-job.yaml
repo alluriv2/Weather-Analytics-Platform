@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: initial-backfill
+  namespace: weather-dev
+  labels:
+    app.kubernetes.io/name: initial-backfill
+    app.kubernetes.io/component: data-initialization
+    app.kubernetes.io/part-of: weather-platform
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: initial-backfill
+        app.kubernetes.io/component: data-initialization
+        app.kubernetes.io/part-of: weather-platform
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: initial-backfill
+          image: weather-platform:0.4.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          command:
+            - python
+            - inital_backfill.py
+          envFrom:
+            - configMapRef:
+                name: weather-config
+            - secretRef:
+                name: postgres-credentials
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: producer-state
+              mountPath: /state
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: producer-state
+          persistentVolumeClaim:
+            claimName: producer-state
+        - name: tmp
+          emptyDir: {}

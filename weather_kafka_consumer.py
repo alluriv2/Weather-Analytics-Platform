@@ -1,25 +1,19 @@
 import json
-import os
 from datetime import datetime
 
 import psycopg
-from confluent_kafka import Consumer, KafkaException, TopicPartition
+from confluent_kafka import Consumer, KafkaException
 
 
 # ---------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_PATH = os.path.join(BASE_DIR, "producer_state.json")
-
 from config import (
     POSTGRES_CONFIG,
     KAFKA_BOOTSTRAP_SERVERS,
     KAFKA_TOPIC,
     KAFKA_CONSUMER_GROUP,
-    KAFKA_PARTITION,
-    KAFKA_START_OFFSET,
 )
 
 
@@ -335,47 +329,10 @@ def write_weather_record(conn, record):
 
 
 # ---------------------------------------------------------
-# Producer checkpoint
-# ---------------------------------------------------------
-
-def load_state():
-    if not os.path.exists(STATE_PATH):
-        return {}
-
-    with open(STATE_PATH, "r", encoding="utf-8") as file:
-        return json.load(file)
-
-
-def save_state(state):
-    temporary_path = STATE_PATH + ".tmp"
-
-    with open(temporary_path, "w", encoding="utf-8") as file:
-        json.dump(state, file, indent=2)
-
-    os.replace(temporary_path, STATE_PATH)
-
-
-def update_state_from_record(state, record):
-    station = record["station"]
-    record_dt = record["dt"]
-
-    current_value = state.get(station)
-    current_dt = parse_dt(current_value) if current_value else None
-
-    if current_dt is None or record_dt > current_dt:
-        state[station] = record_dt.isoformat()
-        return True
-
-    return False
-
-
-# ---------------------------------------------------------
 # Main consumer
 # ---------------------------------------------------------
 
 def main():
-    state = load_state()
-
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP_SERVERS,
         "group.id": KAFKA_CONSUMER_GROUP,
@@ -383,20 +340,10 @@ def main():
         "enable.auto.commit": False,
     })
 
-    # Keep the existing manual partition assignment.
-    consumer.assign([
-        TopicPartition(
-            KAFKA_TOPIC,
-            KAFKA_PARTITION,
-            KAFKA_START_OFFSET,
-        )
-    ])
+    consumer.subscribe([KAFKA_TOPIC])
 
     print(f"Listening to Kafka topic: {KAFKA_TOPIC}")
-    print(
-        f"Partition: {KAFKA_PARTITION}, "
-        f"starting offset: {KAFKA_START_OFFSET}"
-    )
+    print(f"Consumer group: {KAFKA_CONSUMER_GROUP}")
     print("Press Ctrl+C to stop.\n")
 
     try:
@@ -425,6 +372,10 @@ def main():
                             "Skipping malformed message "
                             f"at offset {msg.offset()}"
                         )
+                        consumer.commit(
+                            message=msg,
+                            asynchronous=False,
+                        )
                         continue
 
                     # Keep raw pressure in Pa in the weather table.
@@ -439,13 +390,13 @@ def main():
                     # Raw and latest writes are committed together.
                     write_weather_record(conn, record)
 
-                    state_changed = update_state_from_record(
-                        state,
-                        record,
+                    # Commit the Kafka offset only after PostgreSQL commits.
+                    # A crash between these commits can replay a message, so
+                    # the database writes remain idempotent upserts.
+                    consumer.commit(
+                        message=msg,
+                        asynchronous=False,
                     )
-
-                    if state_changed:
-                        save_state(state)
 
                     print(
                         f"Stored {record['station']} "
