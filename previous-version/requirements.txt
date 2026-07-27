@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+dash
+plotly
+pandas
+numpy
+psycopg[binary]
+confluent-kafka
+requests
+httpx
+beautifulsoup4
+python-dotenv

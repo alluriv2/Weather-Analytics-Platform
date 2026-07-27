@@ -1,175 +1,152 @@
 # Real-Time Weather Analytics Platform
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
-![Apache Kafka](https://img.shields.io/badge/Apache-Kafka-orange)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-Orchestrated-326CE5)
+![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-4.3-orange)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-REST-green)
+![FastAPI](https://img.shields.io/badge/FastAPI-REST-009688)
 ![Plotly Dash](https://img.shields.io/badge/Plotly-Dash-purple)
-![Docker](https://img.shields.io/badge/Docker-Compose-blue)
 
-A real-time weather analytics platform that continuously ingests live weather observations from remote weather stations, streams new observations through Apache Kafka, stores historical and latest-state weather data in PostgreSQL, precomputes analytical aggregates, exposes REST APIs with FastAPI, and visualizes live and historical weather data using an interactive Plotly Dash dashboard.
+The current release is a Kubernetes-based, real-time weather analytics
+platform. It collects observations from remote weather stations, streams new
+events through Kafka, stores current and historical data in PostgreSQL,
+precomputes analytical windows, exposes a FastAPI service, and presents the
+results in a Plotly Dash dashboard.
 
----
-
-# Architecture
-
-```text
-Weather Stations
-        │
-        ▼
-Initial Backfill
-        │
-        ▼
-Kafka Producer
-        │
-        ▼
-Apache Kafka
-        │
-        ▼
-Kafka Consumer
-        │
-        ▼
-PostgreSQL
-        │
-        ├────────► weather
-        ├────────► weather_latest
-        └────────► weather_aggregates
-                     │
-                     ▼
-               FastAPI REST API
-                     │
-                     ▼
-             Plotly Dash Dashboard
-```
-
----
-
-# Features
-
-- Real-time weather data ingestion
-- Apache Kafka event streaming
-- Incremental event publishing using producer checkpoints
-- PostgreSQL historical and latest-state storage
-- Precomputed historical aggregates
-- REST APIs with FastAPI
-- Interactive Plotly Dash dashboard
-- Dockerized infrastructure
-- Configuration using environment variables
-
----
-
-# Technology Stack
-
-| Component | Technology |
-|-----------|------------|
-| Language | Python |
-| Streaming | Apache Kafka |
-| Database | PostgreSQL |
-| API | FastAPI |
-| Dashboard | Plotly Dash |
-| Visualization | Plotly |
-| Data Processing | Pandas |
-| Web Scraping | BeautifulSoup |
-| Containers | Docker Compose |
-
----
-
-# Dashboard
-
-## Current Weather
-
-![Current Conditions](images/current_conditions.png)
-
----
-
-## Historical Trends
-
-![Historical Trends](images/trends.png)
-
-
----
-
-## Kafka UI
-
-![Kafka UI](images/kafka_ui.png)
-
----
-
-# Project Structure
+## Current architecture
 
 ```text
-Weather-Analytics-Platform/
-
-dashboard/
-config.py
-docker-compose.yml
-run_platform.py
-initial_backfill.py
-weather_kafka_producer.py
-weather_kafka_consumer.py
-weather_aggregation_postgres.py
-weather_api.py
-requirements.txt
-README.md
+Weather stations
+       │
+       ▼
+Python producer ──► Apache Kafka ──► Python consumer
+                                           │
+                                           ▼
+                                      PostgreSQL
+                                           │
+                         ┌─────────────────┴─────────────────┐
+                         ▼                                   ▼
+                 Aggregation worker                    FastAPI API
+                                                            │
+                                                            ▼
+                                                     Dash dashboard
 ```
 
----
+Kubernetes manages the services, health checks, restarts, configuration, and
+persistent storage. The Python application containers run as a non-root user
+with read-only root filesystems.
 
-# Running the Project
+## Components
 
-Start Docker services
+| Component | Purpose |
+|---|---|
+| Initial backfill Job | Loads the historical station dataset |
+| Producer Deployment | Publishes new observations to Kafka |
+| Kafka StatefulSet | Provides durable event streaming |
+| Consumer Deployment | Writes events to PostgreSQL with committed offsets |
+| PostgreSQL StatefulSet | Stores observations and aggregates persistently |
+| Aggregator Deployment | Refreshes day, week, month, and year windows |
+| FastAPI Deployment | Serves health, latest, and history endpoints |
+| Dash Deployment | Provides the interactive weather dashboard |
+| Kafka UI Deployment | Displays broker, topic, and consumer information |
+
+## Repository layout
+
+```text
+.
+├── dashboard/                # Plotly Dash application
+├── images/                   # README screenshots
+├── kubernetes/               # Current Kubernetes deployment
+├── previous-version/         # Archived version 1 (Docker Compose)
+├── Dockerfile                # Shared Python application image
+├── config.py
+├── inital_backfill.py
+├── requirements.txt
+├── weather_aggregation_postgres.py
+├── weather_api.py
+├── weather_kafka_consumer.py
+└── weather_kafka_producer.py
+```
+
+## Run the current release locally
+
+Prerequisites:
+
+- Docker Desktop with Kubernetes enabled
+- `docker`
+- `kubectl`
+
+Build the application image:
 
 ```bash
-docker compose up -d
+docker build -t weather-platform:0.4.0 .
 ```
 
-Run the initial historical backfill
+Create the namespace and configuration:
 
 ```bash
-python initial_backfill.py
+kubectl apply -f kubernetes/namespace.yaml
+kubectl apply -f kubernetes/configmap.yaml
 ```
 
-Start the platform
+Create the database credentials directly in Kubernetes. Do not commit the
+password or a generated Secret file:
 
 ```bash
-python run_platform.py
+read -s "WEATHER_DB_PASSWORD?Enter the PostgreSQL password: "
+echo
+kubectl create secret generic postgres-credentials \
+  --namespace weather-dev \
+  --from-literal=POSTGRES_USER=weather_user \
+  --from-literal=POSTGRES_PASSWORD="$WEATHER_DB_PASSWORD"
+unset WEATHER_DB_PASSWORD
 ```
 
-Available services
+Deploy the platform:
 
-| Service | URL |
-|----------|-----|
-| Dashboard | http://127.0.0.1:8050 |
-| FastAPI Docs | http://127.0.0.1:8000/docs |
-| Kafka UI | http://127.0.0.1:8080 |
+```bash
+kubectl apply -k kubernetes
+```
 
----
+Check its status:
 
-# Skills Demonstrated
+```bash
+kubectl get deployments,statefulsets,pods,pvc -n weather-dev
+```
 
-- Real-Time Data Engineering
-- Apache Kafka
-- PostgreSQL
-- Incremental ETL Pipelines
-- Event-Driven Architecture
-- REST API Development
-- Interactive Dashboard Development
-- Docker
-- Configuration Management
-- End-to-End Data Pipeline Design
+Open the dashboard:
 
----
+```bash
+kubectl port-forward -n weather-dev service/weather-dashboard 18050:8050
+```
 
-# Future Enhancements
+Then visit <http://127.0.0.1:18050>.
 
-- Azure deployment
-- Kubernetes orchestration
-- Apache Airflow scheduling
-- CI/CD with GitHub Actions
-- Prometheus & Grafana monitoring
+Open Kafka UI in a separate terminal:
 
----
+```bash
+kubectl port-forward -n weather-dev service/kafka-ui 18080:8080
+```
 
-# License
+Then visit <http://127.0.0.1:18080>.
+
+For first-time deployment order, initial backfill, verification, restart,
+recovery, and shutdown procedures, read the
+[complete Kubernetes runbook](kubernetes/README.md).
+
+## Previous version
+
+The original Docker Compose implementation is preserved in
+[`previous-version/`](previous-version/README.md). It is retained for reference
+and is not the current deployment method.
+
+## Data and secrets
+
+The repository intentionally excludes `.env` files, database data, Kafka data,
+producer checkpoints, and Kubernetes Secret manifests. Runtime data belongs in
+Kubernetes persistent volumes, and credentials must be created locally in the
+cluster.
+
+## License
 
 This project is intended for educational and portfolio purposes.
