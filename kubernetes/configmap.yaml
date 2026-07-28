@@ -11,7 +11,7 @@ data:
   POSTGRES_DB: weather_db_dev
 
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-  KAFKA_TOPIC: raw_weather_events_dev
+  KAFKA_TOPIC: raw_weather_events_python_prod
   KAFKA_CLIENT_ID: weather-producer-dev
   KAFKA_CONSUMER_GROUP: weather-postgres-consumer-dev
   KAFKA_PARTITION: "0"
