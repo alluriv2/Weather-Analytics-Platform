@@ -17,10 +17,20 @@ controller addresses.
 | Dashboard port | `28050` | `18050` |
 | API port | `28000` | `18000` |
 | Kafka UI port | `28080` | `18080` |
+| Prometheus port | `29090` | Not deployed |
 
 Each namespace contains its own Kafka StatefulSet and PVC, producer, consumer,
 aggregator, API, dashboard, Kafka UI, startup backfill Job, and scheduled
 reconciler.
+
+The development overlay additionally deploys Prometheus. Keeping monitoring in
+the development overlay allows metrics and scrape configuration to be tested
+without changing production.
+
+## Verify Prometheus in development
+
+After starting development, open <http://127.0.0.1:29090>. The target page at
+`/targets` should show the configured application targets as healthy.
 
 ## Render and validate manifests
 

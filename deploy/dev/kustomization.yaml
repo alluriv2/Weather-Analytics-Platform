@@ -5,13 +5,19 @@ namespace: weather-dev-python
 
 resources:
   - ../../kubernetes
+  - ../../kubernetes/prometheus
   - namespace.yaml
 
 patches:
   - path: configmap-patch.yaml
   - path: kafka-patch.yaml
+  - path: aggregator-resources-patch.yaml
 
 labels:
   - pairs:
       app.kubernetes.io/environment: development
     includeSelectors: false
+
+images:
+  - name: weather-platform
+    newTag: prometheus-dev

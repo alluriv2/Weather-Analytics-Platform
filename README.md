@@ -88,10 +88,16 @@ Development service addresses:
 | API documentation | <http://127.0.0.1:28000/docs> |
 | Ingestion status | <http://127.0.0.1:28000/ingestion-status> |
 | Kafka UI | <http://127.0.0.1:28080> |
+| Prometheus | <http://127.0.0.1:29090> |
 
 The first start creates the environment's independent database and performs a
 full historical backfill. Later starts reuse that database and reconcile only
 missing records.
+
+Prometheus is enabled only in development while the monitoring feature is
+being validated. It scrapes application metrics from the development
+workloads and uses a development-only application image tag; production
+remains unchanged.
 
 ## Bootstrap options
 

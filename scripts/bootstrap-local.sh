@@ -54,8 +54,10 @@ case "$ENVIRONMENT" in
         DASHBOARD_LOCAL_PORT="18050"
         API_LOCAL_PORT="18000"
         KAFKA_UI_LOCAL_PORT="18080"
+        PROMETHEUS_ENABLED=false
         ;;
     dev)
+        IMAGE_TAG="weather-platform:prometheus-dev"
         NAMESPACE="weather-dev-python"
         OVERLAY_DIR="$ROOT_DIR/deploy/dev"
         ENV_FILE="$ROOT_DIR/.env.dev"
@@ -68,6 +70,8 @@ case "$ENVIRONMENT" in
         DASHBOARD_LOCAL_PORT="28050"
         API_LOCAL_PORT="28000"
         KAFKA_UI_LOCAL_PORT="28080"
+        PROMETHEUS_LOCAL_PORT="29090"
+        PROMETHEUS_ENABLED=true
         ;;
     *)
         echo "Environment must be either dev or prod; received: $ENVIRONMENT" >&2
@@ -307,6 +311,10 @@ deployments=(
     kafka-ui
 )
 
+if [[ "$PROMETHEUS_ENABLED" == true ]]; then
+    deployments+=(prometheus)
+fi
+
 # Environment variables sourced from Secrets and ConfigMaps are captured when a
 # pod starts. Restart existing deployments so a recovered or changed credential
 # is applied immediately instead of leaving old pods with stale values.
@@ -381,6 +389,9 @@ if [[ "$START_PORT_FORWARDS" == true ]]; then
     start_port_forward weather-dashboard "$DASHBOARD_LOCAL_PORT" 8050
     start_port_forward weather-api "$API_LOCAL_PORT" 8000
     start_port_forward kafka-ui "$KAFKA_UI_LOCAL_PORT" 8080
+    if [[ "$PROMETHEUS_ENABLED" == true ]]; then
+        start_port_forward prometheus "$PROMETHEUS_LOCAL_PORT" 9090
+    fi
 fi
 
 echo
@@ -394,6 +405,9 @@ if [[ "$START_PORT_FORWARDS" == true ]]; then
     echo "API:              http://127.0.0.1:$API_LOCAL_PORT"
     echo "Ingestion status: http://127.0.0.1:$API_LOCAL_PORT/ingestion-status"
     echo "Kafka UI:         http://127.0.0.1:$KAFKA_UI_LOCAL_PORT"
+    if [[ "$PROMETHEUS_ENABLED" == true ]]; then
+        echo "Prometheus:       http://127.0.0.1:$PROMETHEUS_LOCAL_PORT"
+    fi
 fi
 
 echo

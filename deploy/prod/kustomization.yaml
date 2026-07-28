@@ -15,3 +15,7 @@ labels:
   - pairs:
       app.kubernetes.io/environment: production
     includeSelectors: false
+
+images:
+  - name: weather-platform
+    newTag: 0.5.3
