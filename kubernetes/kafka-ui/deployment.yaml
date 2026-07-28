@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: kafka-ui
-  namespace: weather-dev
   labels:
     app.kubernetes.io/name: kafka-ui
     app.kubernetes.io/component: kafka-observability

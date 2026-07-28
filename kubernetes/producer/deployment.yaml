@@ -2,13 +2,12 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: weather-producer
-  namespace: weather-dev
   labels:
     app.kubernetes.io/name: weather-producer
     app.kubernetes.io/component: producer
     app.kubernetes.io/part-of: weather-platform
 spec:
-  replicas: 1
+  replicas: 0
   strategy:
     type: Recreate
   selector:

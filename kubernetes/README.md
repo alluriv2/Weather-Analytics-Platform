@@ -1,241 +1,121 @@
 # Local Kubernetes runbook
 
-This Kubernetes configuration runs Kafka and the Weather Platform application
-services. PostgreSQL is deliberately outside Kubernetes and stores its files
-under `local-data/postgres/`.
+The base manifests in `kubernetes/` are namespace-neutral. Environment overlays
+in `deploy/dev/` and `deploy/prod/` assign environment-specific namespaces,
+database endpoints, Kafka topics, client IDs, consumer groups, and Kafka
+controller addresses.
 
-## Ownership boundaries
+## Environment boundaries
 
-```text
-Docker Compose
-└── PostgreSQL + durable host-mounted data
+| Setting | Development | Production |
+| --- | --- | --- |
+| Namespace | `weather-dev-python` | `weather-prod-python` |
+| Kafka topic | `raw_weather_events_python_dev` | `raw_weather_events_python_prod` |
+| Consumer group | `weather-postgres-consumer-python-dev` | `weather-postgres-consumer-python-prod` |
+| PostgreSQL host port | `5434` | `5433` |
+| PostgreSQL database | `weather_db_python_dev` | `weather_db_dev` |
+| Dashboard port | `28050` | `18050` |
+| API port | `28000` | `18000` |
+| Kafka UI port | `28080` | `18080` |
 
-Kubernetes namespace weather-dev
-├── Kafka StatefulSet + replaceable local Kafka PVC
-├── Initial reconciliation Job
-├── Scheduled reconciliation CronJob
-├── Producer
-├── Consumer
-├── Aggregator
-├── API
-├── Dashboard
-└── Kafka UI
-```
+Each namespace contains its own Kafka StatefulSet and PVC, producer, consumer,
+aggregator, API, dashboard, Kafka UI, startup backfill Job, and scheduled
+reconciler.
 
-The database is authoritative. Kafka and the Kubernetes namespace can be
-recreated.
-
-## Safety check
+## Render and validate manifests
 
 ```bash
-kubectl config current-context
+kubectl kustomize deploy/dev
+kubectl kustomize deploy/prod
 ```
 
-For local deployment, this must print `docker-desktop`.
+Client-side validation:
+
+```bash
+kubectl apply --dry-run=client -k deploy/dev
+kubectl apply --dry-run=client -k deploy/prod
+```
 
 ## Automated deployment
 
-The complete ordered workflow can be run from the repository root:
+Production:
 
 ```bash
-./scripts/bootstrap-local.sh
+./scripts/bootstrap-local.sh --environment prod
 ```
 
-The script is idempotent. It reads the database credential from the Git-ignored
-`.env` file and prompts only during first-time setup. An empty PostgreSQL folder
-triggers the complete historical backfill; an existing database triggers
-incremental reconciliation. If an existing database cannot be authenticated,
-the script exits before changing Kubernetes resources. The sections below
-document the individual operations performed by the script.
-
-## Database lifecycle
-
-Start PostgreSQL from the repository root:
+Development:
 
 ```bash
-read -s "WEATHER_DB_PASSWORD?Enter the PostgreSQL password: "
-echo
-
-WEATHER_DB_PASSWORD="$WEATHER_DB_PASSWORD" \
-  docker compose -f local/postgres-compose.yaml up -d
+./scripts/bootstrap-local.sh --environment dev
 ```
 
-The database listens only on `127.0.0.1:5433`. Docker Desktop Kubernetes pods
-reach it using `host.docker.internal:5433`.
+The bootstrap:
 
-Create the matching Kubernetes credential:
+1. Validates the Docker Desktop context.
+2. Starts and authenticates the selected PostgreSQL database.
+3. Creates the selected namespace and Secret.
+4. Applies the matching Kustomize overlay.
+5. Waits for Kafka.
+6. Suspends scheduled reconciliation during startup backfill.
+7. Runs full or incremental reconciliation.
+8. Resumes scheduled reconciliation.
+9. Restarts workloads with the current configuration.
+10. Waits for readiness and opens environment-specific local ports.
+
+## Verify Kafka
+
+Development:
 
 ```bash
-kubectl apply -f kubernetes/namespace.yaml
-kubectl apply -f kubernetes/configmap.yaml
-
-kubectl create secret generic postgres-credentials \
-  --namespace weather-dev \
-  --from-literal=POSTGRES_USER=weather_user \
-  --from-literal=POSTGRES_PASSWORD="$WEATHER_DB_PASSWORD"
-
-unset WEATHER_DB_PASSWORD
+kubectl exec --namespace weather-dev-python kafka-0 -- \
+  /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server kafka:9092 \
+  --group weather-postgres-consumer-python-dev \
+  --describe
 ```
 
-## Ordered deployment
-
-Build the immutable local image version:
+Production:
 
 ```bash
-docker build -t weather-platform:0.5.3 .
+kubectl exec --namespace weather-prod-python kafka-0 -- \
+  /opt/kafka/bin/kafka-consumer-groups.sh \
+  --bootstrap-server kafka:9092 \
+  --group weather-postgres-consumer-python-prod \
+  --describe
 ```
 
-Start Kafka:
+Healthy consumers have lag `0`.
 
-```bash
-kubectl apply -f kubernetes/kafka
-kubectl rollout status statefulset/kafka \
-  --namespace weather-dev \
-  --timeout=300s
-```
+## Verify ingestion
 
-Run startup reconciliation:
-
-```bash
-kubectl apply -f kubernetes/producer/initial-backfill-job.yaml
-kubectl wait \
-  --for=condition=complete \
-  job/initial-backfill \
-  --namespace weather-dev \
-  --timeout=1800s
-kubectl logs job/initial-backfill --namespace weather-dev
-```
-
-The same command supports both cases:
-
-- Empty database: complete historical backfill
-- Existing database: recent incremental reconciliation
-
-Start the platform:
-
-```bash
-kubectl apply -f kubernetes/reconciler/cronjob.yaml
-kubectl apply -f kubernetes/producer/deployment.yaml
-kubectl apply -f kubernetes/consumer/deployment.yaml
-kubectl apply -f kubernetes/aggregator/deployment.yaml
-kubectl apply -f kubernetes/api
-kubectl apply -f kubernetes/dashboard
-kubectl apply -f kubernetes/kafka-ui
-```
-
-## Watermark validation
-
-Expose the API:
+Production:
 
 ```bash
 kubectl port-forward \
-  --namespace weather-dev \
+  --namespace weather-prod-python \
   service/weather-api \
   18000:8000
 ```
 
-Open <http://127.0.0.1:18000/ingestion-status>.
-
-For each station, the response includes:
-
-- `source_latest_ts`
-- `producer_latest_ts`
-- `consumer_latest_ts`
-- `database_latest_ts`
-- `kafka_partition`
-- `kafka_offset`
-- `producer_consumer_gap_seconds`
-- `source_database_gap_seconds`
-- `requires_backfill`
-
-A short producer/consumer difference can occur while Kafka is being consumed.
-When Kafka lag returns to zero, the timestamps should converge. If the
-database remains behind, the reconciler repairs it.
-
-Check Kafka lag:
-
-```bash
-kubectl exec --namespace weather-dev kafka-0 -- \
-  /opt/kafka/bin/kafka-consumer-groups.sh \
-  --bootstrap-server kafka:9092 \
-  --describe \
-  --group weather-postgres-consumer-dev
-```
-
-## Automatic reconciliation
-
-`weather-reconciler` runs every five minutes with
-`concurrencyPolicy: Forbid`. It re-reads the last two source days and performs
-idempotent upserts. This repairs tail gaps without duplicating rows.
-
-Run it immediately:
-
-```bash
-kubectl create job \
-  --from=cronjob/weather-reconciler \
-  weather-reconcile-manual \
-  --namespace weather-dev
-
-kubectl wait \
-  --for=condition=complete \
-  job/weather-reconcile-manual \
-  --namespace weather-dev \
-  --timeout=600s
-```
-
-Use a new manual Job name each time, or delete the prior Job first.
-
-## Local access
-
-Dashboard:
+Development:
 
 ```bash
 kubectl port-forward \
-  --namespace weather-dev \
-  service/weather-dashboard \
-  18050:8050
+  --namespace weather-dev-python \
+  service/weather-api \
+  28000:8000
 ```
 
-Kafka UI:
+Open the corresponding `/ingestion-status` endpoint and compare the source,
+producer, consumer, and database timestamps.
 
-```bash
-kubectl port-forward \
-  --namespace weather-dev \
-  service/kafka-ui \
-  18080:8080
-```
+## Namespace recreation
 
-## Cluster or namespace recreation
+Deleting a namespace removes that environment's Kafka broker, Kafka PVC,
+offsets, and application workloads. It does not delete the external PostgreSQL
+database.
 
-After Kubernetes is recreated:
-
-1. Start PostgreSQL if its Docker container is stopped.
-2. Recreate the namespace, ConfigMap, and Secret.
-3. Deploy Kafka.
-4. Run the startup reconciliation Job.
-5. Deploy the continuous workloads.
-
-The Job detects the existing database and runs incrementally. Do not run a
-full historical load unless the database is actually empty.
-
-## Shutdown
-
-Stopping Docker Desktop Kubernetes stops the application but does not remove
-the external PostgreSQL files.
-
-Deleting the namespace is safe for PostgreSQL:
-
-```bash
-kubectl delete namespace weather-dev
-```
-
-It does delete Kafka and all other namespaced resources.
-
-Stop PostgreSQL without deleting its files:
-
-```bash
-WEATHER_DB_PASSWORD=unused \
-  docker compose -f local/postgres-compose.yaml stop
-```
-
-Never delete `local-data/postgres/` unless database loss is intentional.
+Recreate only the desired environment by running its bootstrap command. The
+startup reconciliation restores Kafka downtime gaps from the retained database
+and remote weather source.

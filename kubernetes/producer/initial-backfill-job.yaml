@@ -2,7 +2,6 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: initial-backfill
-  namespace: weather-dev
   labels:
     app.kubernetes.io/name: initial-backfill
     app.kubernetes.io/component: data-initialization

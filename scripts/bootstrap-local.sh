@@ -4,27 +4,76 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_TAG="weather-platform:0.5.3"
-NAMESPACE="weather-dev"
+ENVIRONMENT="prod"
 START_PORT_FORWARDS=true
 BUILD_IMAGE=true
 
-for argument in "$@"; do
-    case "$argument" in
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --environment)
+            if [[ $# -lt 2 ]]; then
+                echo "Missing value for --environment." >&2
+                exit 2
+            fi
+            ENVIRONMENT="$2"
+            shift 2
+            ;;
+        --environment=*)
+            ENVIRONMENT="${1#*=}"
+            shift
+            ;;
         --no-port-forward)
             START_PORT_FORWARDS=false
+            shift
             ;;
         --skip-build)
             BUILD_IMAGE=false
+            shift
             ;;
         *)
-            echo "Unknown argument: $argument" >&2
-            echo "Usage: $0 [--skip-build] [--no-port-forward]" >&2
+            echo "Unknown argument: $1" >&2
+            echo "Usage: $0 [--environment dev|prod] [--skip-build] [--no-port-forward]" >&2
             exit 2
             ;;
     esac
 done
 
 cd "$ROOT_DIR"
+
+case "$ENVIRONMENT" in
+    prod)
+        NAMESPACE="weather-prod-python"
+        OVERLAY_DIR="$ROOT_DIR/deploy/prod"
+        ENV_FILE="$ROOT_DIR/.env"
+        POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
+        POSTGRES_COMPOSE_FILE="$ROOT_DIR/local/postgres-compose.yaml"
+        POSTGRES_COMPOSE_PROJECT="local"
+        POSTGRES_CONTAINER="weather-postgres-local"
+        POSTGRES_PORT="5433"
+        POSTGRES_DB="weather_db_dev"
+        DASHBOARD_LOCAL_PORT="18050"
+        API_LOCAL_PORT="18000"
+        KAFKA_UI_LOCAL_PORT="18080"
+        ;;
+    dev)
+        NAMESPACE="weather-dev-python"
+        OVERLAY_DIR="$ROOT_DIR/deploy/dev"
+        ENV_FILE="$ROOT_DIR/.env.dev"
+        POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres-dev"
+        POSTGRES_COMPOSE_FILE="$ROOT_DIR/local/postgres-compose.dev.yaml"
+        POSTGRES_COMPOSE_PROJECT="weather-python-dev"
+        POSTGRES_CONTAINER="weather-postgres-python-dev"
+        POSTGRES_PORT="5434"
+        POSTGRES_DB="weather_db_python_dev"
+        DASHBOARD_LOCAL_PORT="28050"
+        API_LOCAL_PORT="28000"
+        KAFKA_UI_LOCAL_PORT="28080"
+        ;;
+    *)
+        echo "Environment must be either dev or prod; received: $ENVIRONMENT" >&2
+        exit 2
+        ;;
+esac
 
 required_commands=(
     docker
@@ -49,8 +98,6 @@ fi
 
 kubectl cluster-info >/dev/null
 
-ENV_FILE="$ROOT_DIR/.env"
-POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
 POSTGRES_DATABASE_EXISTS=false
 
 if [[ -f "$POSTGRES_DATA_DIR/PG_VERSION" ]]; then
@@ -68,7 +115,7 @@ WEATHER_DB_PASSWORD="${POSTGRES_PASSWORD:-${WEATHER_DB_PASSWORD:-}}"
 
 if [[ -z "$WEATHER_DB_PASSWORD" ]]; then
     if [[ "$POSTGRES_DATABASE_EXISTS" == true ]]; then
-        echo "PostgreSQL data exists, but POSTGRES_PASSWORD is missing from .env." >&2
+        echo "PostgreSQL data exists, but POSTGRES_PASSWORD is missing from $ENV_FILE." >&2
         echo "Restore the original password in $ENV_FILE; a new password will not unlock the existing database." >&2
         exit 1
     fi
@@ -84,13 +131,13 @@ if [[ -z "$WEATHER_DB_PASSWORD" ]]; then
     umask 077
     {
         echo "POSTGRES_HOST=127.0.0.1"
-        echo "POSTGRES_PORT=5433"
-        echo "POSTGRES_DB=weather_db_dev"
+        echo "POSTGRES_PORT=$POSTGRES_PORT"
+        echo "POSTGRES_DB=$POSTGRES_DB"
         echo "POSTGRES_USER=weather_user"
         printf 'POSTGRES_PASSWORD=%q\n' "$WEATHER_DB_PASSWORD"
     } >>"$ENV_FILE"
     chmod 600 "$ENV_FILE"
-    echo "Saved the local database configuration in .env."
+    echo "Saved the $ENVIRONMENT database configuration in $ENV_FILE."
 fi
 
 export WEATHER_DB_PASSWORD
@@ -102,17 +149,17 @@ if [[ "$BUILD_IMAGE" == true ]]; then
 fi
 
 echo
-echo "==> Starting cluster-independent PostgreSQL"
+echo "==> Starting $ENVIRONMENT cluster-independent PostgreSQL"
 docker compose \
-    --project-name local \
-    -f local/postgres-compose.yaml \
+    --project-name "$POSTGRES_COMPOSE_PROJECT" \
+    -f "$POSTGRES_COMPOSE_FILE" \
     up -d
 
 postgres_health=""
 
 for _ in {1..60}; do
     postgres_health="$(
-        docker inspect weather-postgres-local \
+        docker inspect "$POSTGRES_CONTAINER" \
             --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
             2>/dev/null \
             || true
@@ -127,7 +174,7 @@ done
 
 if [[ "$postgres_health" != "healthy" ]]; then
     echo "PostgreSQL did not become healthy." >&2
-    docker logs weather-postgres-local --tail 80 >&2 || true
+    docker logs "$POSTGRES_CONTAINER" --tail 80 >&2 || true
     exit 1
 fi
 
@@ -139,23 +186,22 @@ if ! docker run \
     postgres:17 \
     psql \
     --host host.docker.internal \
-    --port 5433 \
+    --port "$POSTGRES_PORT" \
     --username weather_user \
-    --dbname weather_db_dev \
+    --dbname "$POSTGRES_DB" \
     --no-password \
     --command "SELECT 1;" \
     >/dev/null 2>&1; then
-    echo "The POSTGRES_PASSWORD in .env does not authenticate to the existing database." >&2
-    echo "No Kubernetes workloads were changed. Restore the original password in .env." >&2
+    echo "The POSTGRES_PASSWORD in $ENV_FILE does not authenticate to the existing database." >&2
+    echo "No Kubernetes workloads were changed. Restore the original password in $ENV_FILE." >&2
     exit 1
 fi
 
 echo "PostgreSQL credentials are valid."
 
 echo
-echo "==> Creating Kubernetes configuration"
-kubectl apply -f kubernetes/namespace.yaml
-kubectl apply -f kubernetes/configmap.yaml
+echo "==> Creating $ENVIRONMENT Kubernetes configuration"
+kubectl apply -f "$OVERLAY_DIR/namespace.yaml"
 
 kubectl create secret generic postgres-credentials \
     --namespace "$NAMESPACE" \
@@ -166,23 +212,26 @@ kubectl create secret generic postgres-credentials \
     | kubectl apply -f -
 
 echo
-echo "==> Starting Kafka"
-kubectl apply \
-    -f kubernetes/kafka/service.yaml \
-    -f kubernetes/kafka/statefulset.yaml
-
-kubectl rollout status statefulset/kafka \
-    --namespace "$NAMESPACE" \
-    --timeout=300s
-
-echo
-echo "==> Running startup reconciliation"
+echo "==> Preparing $ENVIRONMENT deployment"
 kubectl delete job initial-backfill \
     --namespace "$NAMESPACE" \
     --ignore-not-found \
     --wait=true
 
-kubectl apply -f kubernetes/producer/initial-backfill-job.yaml
+kubectl apply -k "$OVERLAY_DIR"
+kubectl patch cronjob weather-reconciler \
+    --namespace "$NAMESPACE" \
+    --type merge \
+    --patch '{"spec":{"suspend":true}}'
+
+echo
+echo "==> Starting $ENVIRONMENT Kafka"
+kubectl rollout status statefulset/kafka \
+    --namespace "$NAMESPACE" \
+    --timeout=300s
+
+echo
+echo "==> Running $ENVIRONMENT startup reconciliation"
 
 reconciliation_finished=false
 
@@ -237,21 +286,17 @@ kubectl logs job/initial-backfill \
     --tail=30
 
 echo
-echo "==> Starting continuous workloads"
-kubectl apply -f kubernetes/reconciler/cronjob.yaml
-kubectl apply \
-    -f kubernetes/producer/deployment.yaml \
-    -f kubernetes/consumer/deployment.yaml \
-    -f kubernetes/aggregator/deployment.yaml
-kubectl apply \
-    -f kubernetes/api/service.yaml \
-    -f kubernetes/api/deployment.yaml
-kubectl apply \
-    -f kubernetes/dashboard/service.yaml \
-    -f kubernetes/dashboard/deployment.yaml
-kubectl apply \
-    -f kubernetes/kafka-ui/service.yaml \
-    -f kubernetes/kafka-ui/deployment.yaml
+echo "==> Starting $ENVIRONMENT continuous workloads"
+kubectl patch cronjob weather-reconciler \
+    --namespace "$NAMESPACE" \
+    --type merge \
+    --patch '{"spec":{"suspend":false}}'
+
+kubectl scale \
+    deployment/weather-producer \
+    deployment/weather-consumer \
+    --namespace "$NAMESPACE" \
+    --replicas=1
 
 deployments=(
     weather-producer
@@ -279,7 +324,7 @@ start_port_forward() {
     local service_name="$1"
     local local_port="$2"
     local service_port="$3"
-    local run_directory="$ROOT_DIR/local-data/run"
+    local run_directory="$ROOT_DIR/local-data/run-$ENVIRONMENT"
     local pid_file="$run_directory/${service_name}.pid"
     local log_file="$run_directory/${service_name}.log"
 
@@ -332,10 +377,10 @@ start_port_forward() {
 
 if [[ "$START_PORT_FORWARDS" == true ]]; then
     echo
-    echo "==> Opening local services"
-    start_port_forward weather-dashboard 18050 8050
-    start_port_forward weather-api 18000 8000
-    start_port_forward kafka-ui 18080 8080
+    echo "==> Opening $ENVIRONMENT local services"
+    start_port_forward weather-dashboard "$DASHBOARD_LOCAL_PORT" 8050
+    start_port_forward weather-api "$API_LOCAL_PORT" 8000
+    start_port_forward kafka-ui "$KAFKA_UI_LOCAL_PORT" 8080
 fi
 
 echo
@@ -345,11 +390,11 @@ kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
 
 if [[ "$START_PORT_FORWARDS" == true ]]; then
     echo
-    echo "Dashboard:        http://127.0.0.1:18050"
-    echo "API:              http://127.0.0.1:18000"
-    echo "Ingestion status: http://127.0.0.1:18000/ingestion-status"
-    echo "Kafka UI:         http://127.0.0.1:18080"
+    echo "Dashboard:        http://127.0.0.1:$DASHBOARD_LOCAL_PORT"
+    echo "API:              http://127.0.0.1:$API_LOCAL_PORT"
+    echo "Ingestion status: http://127.0.0.1:$API_LOCAL_PORT/ingestion-status"
+    echo "Kafka UI:         http://127.0.0.1:$KAFKA_UI_LOCAL_PORT"
 fi
 
 echo
-echo "Local Weather Platform bootstrap completed successfully."
+echo "Local Weather Platform $ENVIRONMENT bootstrap completed successfully."

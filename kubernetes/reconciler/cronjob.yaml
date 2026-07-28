@@ -2,13 +2,13 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: weather-reconciler
-  namespace: weather-dev
   labels:
     app.kubernetes.io/name: weather-reconciler
     app.kubernetes.io/component: data-reconciliation
     app.kubernetes.io/part-of: weather-platform
 spec:
   schedule: "*/5 * * * *"
+  suspend: true
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 2
   failedJobsHistoryLimit: 3

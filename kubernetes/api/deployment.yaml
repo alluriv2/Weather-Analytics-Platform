@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: weather-api
-  namespace: weather-dev
   labels:
     app.kubernetes.io/name: weather-api
     app.kubernetes.io/component: api
