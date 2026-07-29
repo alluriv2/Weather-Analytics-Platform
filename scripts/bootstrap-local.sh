@@ -116,6 +116,30 @@ mkdir -p \
     "$POSTGRES_DATA_DIR" \
     "$RUN_DIRECTORY"
 
+stop_registered_port_forwards() {
+    local pid_file
+
+    for pid_file in "$RUN_DIRECTORY"/*.pid; do
+        [[ -e "$pid_file" ]] || continue
+
+        local process_id
+        process_id="$(cat "$pid_file" 2>/dev/null || true)"
+
+        if [[ "$process_id" =~ ^[0-9]+$ ]] \
+            && kill -0 "$process_id" 2>/dev/null; then
+            local process_command
+            process_command="$(ps -p "$process_id" -o command= 2>/dev/null || true)"
+
+            if [[ "$process_command" == *"kubectl port-forward"* ]] \
+                && [[ "$process_command" == *"$NAMESPACE"* ]]; then
+                kill "$process_id"
+            fi
+        fi
+
+        rm -f "$pid_file"
+    done
+}
+
 echo
 echo "==> Building the application image from the current source"
 docker build -t "$IMAGE_TAG" .
@@ -399,12 +423,28 @@ start_port_forward() {
 
 if [[ "$START_PORT_FORWARDS" == true ]]; then
     echo
+    echo "==> Refreshing local service connections"
+    stop_registered_port_forwards
+
+    echo
     echo "==> Opening local services"
-    start_port_forward weather-dashboard 18050 8050
-    start_port_forward weather-api 18000 8000
-    start_port_forward kafka-ui 18080 8080
-    start_port_forward prometheus 19090 9090
-    start_port_forward grafana 13000 3000
+    port_forward_failures=0
+
+    start_port_forward weather-dashboard 18050 8050 \
+        || port_forward_failures=$((port_forward_failures + 1))
+    start_port_forward weather-api 18000 8000 \
+        || port_forward_failures=$((port_forward_failures + 1))
+    start_port_forward kafka-ui 18080 8080 \
+        || port_forward_failures=$((port_forward_failures + 1))
+    start_port_forward prometheus 19090 9090 \
+        || port_forward_failures=$((port_forward_failures + 1))
+    start_port_forward grafana 13000 3000 \
+        || port_forward_failures=$((port_forward_failures + 1))
+
+    if [[ "$port_forward_failures" -gt 0 ]]; then
+        echo "$port_forward_failures local service connection(s) failed to open." >&2
+        echo "The Kubernetes services are still running; inspect local-data/run/*.log." >&2
+    fi
 fi
 
 echo
