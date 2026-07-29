@@ -5,8 +5,8 @@ metadata:
   labels:
     app.kubernetes.io/part-of: weather-platform
 data:
-  POSTGRES_HOST: host.docker.internal
-  POSTGRES_PORT: "5433"
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
   POSTGRES_DB: weather_db
 
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
@@ -24,5 +24,4 @@ data:
   DASH_PORT: "8050"
 
   PRODUCER_POLL_SECONDS: "120"
-  RESET_WEATHER_TABLE: "false"
   RECONCILIATION_LOOKBACK_DAYS: "2"

@@ -27,7 +27,7 @@ spec:
         runAsGroup: 10001
       containers:
         - name: consumer
-          image: weather-platform:0.6.1
+          image: weather-platform:0.7.0
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

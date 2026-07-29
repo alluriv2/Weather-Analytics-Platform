@@ -22,7 +22,7 @@ POSTGRES_CONFIG = {
     "port": int(
         os.getenv(
             "POSTGRES_PORT",
-            "5433",
+            "5432",
         )
     ),
     "dbname": os.getenv(
@@ -38,22 +38,6 @@ POSTGRES_CONFIG = {
         "weather_password",
     ),
 }
-
-
-BACKFILL_BATCH_SIZE = int(
-    os.getenv(
-        "BACKFILL_BATCH_SIZE",
-        "1000",
-    )
-)
-
-RESET_WEATHER_TABLE = (
-    os.getenv(
-        "RESET_WEATHER_TABLE",
-        "false",
-    ).lower()
-    == "true"
-)
 
 
 # ---------------------------------------------------------

@@ -288,6 +288,12 @@ def run_once():
 
         "client.id":
             KAFKA_CLIENT_ID,
+
+        "enable.idempotence":
+            True,
+
+        "acks":
+            "all",
     })
 
     state_changed = False
