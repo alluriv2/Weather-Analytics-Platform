@@ -60,8 +60,22 @@ kubectl cluster-info
 ## Start production
 
 ```bash
-./scripts/bootstrap-local.sh --environment prod
+./start
 ```
+
+The command performs the complete production startup in dependency order:
+
+1. Builds the current application image.
+2. Starts the standalone PostgreSQL service and verifies its credentials.
+3. Creates or updates the production Kubernetes resources.
+4. Starts Kafka and runs the initial or incremental data reconciliation.
+5. Starts the producer and consumer.
+6. Starts the aggregator, API, dashboard, and Kafka UI.
+7. Opens the local service addresses.
+
+On the first run, the startup creates the production database and performs a
+full historical backfill. Later runs retain that database and reconcile only
+records missing since the last stored timestamp.
 
 Production service addresses:
 
@@ -72,6 +86,22 @@ Production service addresses:
 | API documentation | <http://127.0.0.1:18000/docs> |
 | Ingestion status | <http://127.0.0.1:18000/ingestion-status> |
 | Kafka UI | <http://127.0.0.1:18080> |
+
+Check production at any time without changing it:
+
+```bash
+./report
+```
+
+Stop production:
+
+```bash
+./stop
+```
+
+Stopping closes the local service addresses, stops the Kubernetes workloads,
+and stops PostgreSQL. It retains the production database, Kafka storage,
+configuration, and container images so that the next `./start` resumes safely.
 
 ## Start development
 
@@ -89,25 +119,25 @@ Development service addresses:
 | Ingestion status | <http://127.0.0.1:28000/ingestion-status> |
 | Kafka UI | <http://127.0.0.1:28080> |
 
-The first start creates the environment's independent database and performs a
-full historical backfill. Later starts reuse that database and reconcile only
-missing records.
+Development has its own database and Kubernetes namespace and remains available
+through the detailed bootstrap command.
 
 ## Bootstrap options
 
 Reuse the existing application image:
 
 ```bash
-./scripts/bootstrap-local.sh --environment dev --skip-build
+./start --skip-build
 ```
 
 Deploy without opening local service addresses:
 
 ```bash
-./scripts/bootstrap-local.sh --environment prod --no-port-forward
+./start --no-port-forward
 ```
 
-If `--environment` is omitted, the script starts production.
+The long-form bootstrap script remains available for development and advanced
+operations.
 
 ## Verify the environments
 
@@ -166,6 +196,9 @@ untouched.
 │   └── postgres-compose.dev.yaml
 ├── scripts/
 │   └── bootstrap-local.sh
+├── start                       # Start all production components in order
+├── stop                        # Stop production while retaining its data
+├── report                      # Read-only production health summary
 ├── previous-version/
 ├── Dockerfile
 ├── ingestion_state.py

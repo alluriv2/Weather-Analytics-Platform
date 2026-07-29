@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAMESPACE="weather-prod-python"
+POSTGRES_CONTAINER="weather-postgres-local"
+POSTGRES_DB="weather_db_dev"
+KAFKA_GROUP="weather-postgres-consumer-python-prod"
+KAFKA_TOPIC="raw_weather_events_python_prod"
+
+print_value() {
+    printf '%-22s %s\n' "$1" "$2"
+}
+
+echo "Weather Platform production report"
+echo
+
+docker_status="unavailable"
+if docker info >/dev/null 2>&1; then
+    docker_status="running"
+fi
+print_value "Docker:" "$docker_status"
+
+postgres_status="not created"
+if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+    postgres_status="$(
+        docker inspect "$POSTGRES_CONTAINER" \
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
+    )"
+fi
+print_value "PostgreSQL:" "$postgres_status"
+
+latest_database_record="unavailable"
+if [[ "$postgres_status" == "healthy" ]]; then
+    latest_database_record="$(
+        docker exec "$POSTGRES_CONTAINER" \
+            psql \
+            --username weather_user \
+            --dbname "$POSTGRES_DB" \
+            --tuples-only \
+            --no-align \
+            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
+            2>/dev/null \
+            || echo "query failed"
+    )"
+fi
+print_value "Latest DB record:" "$latest_database_record"
+
+kubernetes_status="unavailable"
+if kubectl cluster-info >/dev/null 2>&1; then
+    kubernetes_status="running"
+fi
+print_value "Kubernetes:" "$kubernetes_status"
+
+if [[ "$kubernetes_status" != "running" ]] \
+    || ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    print_value "Namespace:" "unavailable"
+    exit 0
+fi
+
+print_value "Namespace:" "$NAMESPACE"
+
+echo
+printf '%-24s %-10s %-10s\n' "WORKLOAD" "DESIRED" "READY"
+
+while IFS=$'\t' read -r workload desired ready; do
+    printf '%-24s %-10s %-10s\n' \
+        "$workload" \
+        "${desired:-0}" \
+        "${ready:-0}"
+done < <(
+    kubectl get deployments \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\n"}{end}'
+)
+
+kafka_desired="$(
+    kubectl get statefulset kafka \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.spec.replicas}' \
+        2>/dev/null \
+        || echo "0"
+)"
+kafka_ready="$(
+    kubectl get statefulset kafka \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.status.readyReplicas}' \
+        2>/dev/null \
+        || echo "0"
+)"
+printf '%-24s %-10s %-10s\n' \
+    "kafka" \
+    "${kafka_desired:-0}" \
+    "${kafka_ready:-0}"
+
+cron_suspended="$(
+    kubectl get cronjob weather-reconciler \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.spec.suspend}' \
+        2>/dev/null \
+        || echo "unknown"
+)"
+echo
+print_value "Reconciler suspended:" "$cron_suspended"
+
+if [[ "${kafka_ready:-0}" -ge 1 ]]; then
+    kafka_lag="$(
+        kubectl exec \
+            --namespace "$NAMESPACE" \
+            kafka-0 \
+            -- \
+            /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 \
+            --describe \
+            --group "$KAFKA_GROUP" \
+            2>/dev/null \
+            | awk -v topic="$KAFKA_TOPIC" \
+                '$2 == topic && $6 ~ /^[0-9]+$/ {lag += $6; found = 1} END {if (found) print lag; else print "unavailable"}'
+    )"
+else
+    kafka_lag="Kafka stopped"
+fi
+print_value "Kafka consumer lag:" "$kafka_lag"
+
+echo
+echo "This command made no changes."

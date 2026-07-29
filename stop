@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NAMESPACE="weather-prod-python"
+POSTGRES_CONTAINER="weather-postgres-local"
+RUN_DIRECTORY="$ROOT_DIR/local-data/run-prod"
+
+stop_port_forwards() {
+    if [[ ! -d "$RUN_DIRECTORY" ]]; then
+        return
+    fi
+
+    local pid_file
+    for pid_file in "$RUN_DIRECTORY"/*.pid; do
+        [[ -e "$pid_file" ]] || continue
+
+        local process_id
+        process_id="$(cat "$pid_file" 2>/dev/null || true)"
+
+        if [[ "$process_id" =~ ^[0-9]+$ ]] \
+            && kill -0 "$process_id" 2>/dev/null; then
+            local process_command
+            process_command="$(ps -p "$process_id" -o command= 2>/dev/null || true)"
+
+            if [[ "$process_command" == *"kubectl port-forward"* ]] \
+                && [[ "$process_command" == *"$NAMESPACE"* ]]; then
+                kill "$process_id"
+            fi
+        fi
+
+        rm -f "$pid_file"
+    done
+}
+
+echo "==> Closing production local service ports"
+stop_port_forwards
+
+if kubectl cluster-info >/dev/null 2>&1 \
+    && kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    echo
+    echo "==> Suspending production reconciliation"
+    kubectl patch cronjob weather-reconciler \
+        --namespace "$NAMESPACE" \
+        --type merge \
+        --patch '{"spec":{"suspend":true}}'
+
+    echo
+    echo "==> Stopping production application workloads"
+    kubectl scale deployment --all \
+        --namespace "$NAMESPACE" \
+        --replicas=0
+
+    echo
+    echo "==> Stopping production Kafka"
+    kubectl scale statefulset --all \
+        --namespace "$NAMESPACE" \
+        --replicas=0
+
+    kubectl delete jobs --all \
+        --namespace "$NAMESPACE" \
+        --ignore-not-found \
+        --wait=true
+else
+    echo "Kubernetes is unavailable; skipping Kubernetes shutdown."
+fi
+
+echo
+echo "==> Stopping production PostgreSQL"
+if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+    postgres_running="$(
+        docker inspect "$POSTGRES_CONTAINER" \
+            --format '{{.State.Running}}'
+    )"
+
+    if [[ "$postgres_running" == "true" ]]; then
+        docker stop "$POSTGRES_CONTAINER" >/dev/null
+    fi
+fi
+
+echo
+echo "Production stopped. PostgreSQL files and Kafka PVCs were preserved."

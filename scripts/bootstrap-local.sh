@@ -120,6 +120,12 @@ if [[ -z "$WEATHER_DB_PASSWORD" ]]; then
         exit 1
     fi
 
+    if [[ ! -t 0 ]]; then
+        echo "First-time setup requires an interactive terminal to choose the PostgreSQL password." >&2
+        echo "Run this command directly in Terminal." >&2
+        exit 1
+    fi
+
     read -r -s -p "First-time setup: choose the local PostgreSQL password: " WEATHER_DB_PASSWORD
     echo
 
@@ -286,39 +292,53 @@ kubectl logs job/initial-backfill \
     --tail=30
 
 echo
-echo "==> Starting $ENVIRONMENT continuous workloads"
-kubectl patch cronjob weather-reconciler \
-    --namespace "$NAMESPACE" \
-    --type merge \
-    --patch '{"spec":{"suspend":false}}'
-
+echo "==> Starting $ENVIRONMENT ingestion"
 kubectl scale \
     deployment/weather-producer \
     deployment/weather-consumer \
     --namespace "$NAMESPACE" \
     --replicas=1
 
-deployments=(
+ingestion_deployments=(
     weather-producer
     weather-consumer
+)
+
+for deployment in "${ingestion_deployments[@]}"; do
+    kubectl rollout status "deployment/$deployment" \
+        --namespace "$NAMESPACE" \
+        --timeout=180s
+done
+
+echo
+echo "==> Starting $ENVIRONMENT application services"
+kubectl scale \
+    deployment/weather-aggregator \
+    deployment/weather-api \
+    deployment/weather-dashboard \
+    deployment/kafka-ui \
+    --namespace "$NAMESPACE" \
+    --replicas=1
+
+application_deployments=(
     weather-aggregator
     weather-api
     weather-dashboard
     kafka-ui
 )
 
-# Environment variables sourced from Secrets and ConfigMaps are captured when a
-# pod starts. Restart existing deployments so a recovered or changed credential
-# is applied immediately instead of leaving old pods with stale values.
-kubectl rollout restart \
-    "${deployments[@]/#/deployment/}" \
-    --namespace "$NAMESPACE"
-
-for deployment in "${deployments[@]}"; do
+for deployment in "${application_deployments[@]}"; do
     kubectl rollout status "deployment/$deployment" \
         --namespace "$NAMESPACE" \
         --timeout=180s
 done
+
+echo
+echo "==> Enabling $ENVIRONMENT scheduled reconciliation"
+kubectl patch cronjob weather-reconciler \
+    --namespace "$NAMESPACE" \
+    --type merge \
+    --patch '{"spec":{"suspend":false}}'
 
 start_port_forward() {
     local service_name="$1"

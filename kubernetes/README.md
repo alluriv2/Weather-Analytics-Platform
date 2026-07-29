@@ -41,7 +41,9 @@ kubectl apply --dry-run=client -k deploy/prod
 Production:
 
 ```bash
-./scripts/bootstrap-local.sh --environment prod
+./start
+./report
+./stop
 ```
 
 Development:
@@ -55,13 +57,19 @@ The bootstrap:
 1. Validates the Docker Desktop context.
 2. Starts and authenticates the selected PostgreSQL database.
 3. Creates the selected namespace and Secret.
-4. Applies the matching Kustomize overlay.
-5. Waits for Kafka.
-6. Suspends scheduled reconciliation during startup backfill.
+4. Applies the matching Kustomize overlay with application Deployments stopped.
+5. Starts Kafka.
+6. Suspends scheduled reconciliation during startup repair.
 7. Runs full or incremental reconciliation.
-8. Resumes scheduled reconciliation.
-9. Restarts workloads with the current configuration.
-10. Waits for readiness and opens environment-specific local ports.
+8. Starts the producer and consumer.
+9. Starts the aggregator, API, dashboard, and Kafka UI.
+10. Resumes scheduled reconciliation and opens environment-specific local ports.
+
+For production, `./stop` reverses this lifecycle: it closes port forwards,
+suspends reconciliation, stops application Deployments and Kafka, removes
+completed Job pods, and then stops PostgreSQL. It does not delete PostgreSQL
+files, Kafka PVCs, Secrets, the namespace, or images. `./report` only reads
+their current state.
 
 ## Verify Kafka
 
