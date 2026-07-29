@@ -10,8 +10,9 @@
 ![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800)
 
 A containerized weather ingestion and analytics platform. Kubernetes manages
-Kafka and the Python services. Docker runs PostgreSQL with repository-local
-storage so the source-of-truth database survives Kubernetes cluster recreation.
+PostgreSQL, Kafka, and every Python service. PostgreSQL runs in a pod but mounts
+repository-local storage, so its source-of-truth files remain outside the
+cluster lifecycle.
 
 ## Architecture
 
@@ -19,10 +20,11 @@ storage so the source-of-truth database survives Kubernetes cluster recreation.
 Remote weather stations
           │
           ▼
-      Producer ──► Kafka ──► Consumer
-          │                       │
-          │                       ▼
-          └── watermarks ──► PostgreSQL ◄── Reconciler
+ Live producer ─┐
+                ├──► Kafka ──► Consumer ──► PostgreSQL
+Backfill job ───┘                            │
+                                            ▼
+                                      durable watermarks
                                       │
                          ┌────────────┴────────────┐
                          ▼                         ▼
@@ -44,7 +46,7 @@ The runtime uses one Kubernetes namespace and one Kafka topic:
 | Kafka topic | `raw_weather_events_python` |
 | Consumer group | `weather-postgres-consumer-python` |
 
-All custom Python components share the `weather-platform:0.6.1` image. Each
+All custom Python components share the `weather-platform:0.7.0` image. Each
 component runs that image with a different command. PostgreSQL, Kafka, and
 Kafka UI use their own specialized images.
 
@@ -75,23 +77,19 @@ Every normal start rebuilds the Python image from the currently checked-out
 source. It then:
 
 1. Creates repository-local database storage when needed.
-2. Starts PostgreSQL with Docker and waits for database readiness.
-3. Deploys Kafka and waits for broker readiness.
-4. Performs a full backfill for a new database or incremental reconciliation
-   from the retained timestamps.
-5. Starts the producer and consumer.
-6. Starts the aggregator, API, dashboard, and Kafka UI.
-7. Enables scheduled reconciliation.
-8. Starts Kubernetes state metrics, Prometheus, and Grafana.
-9. Opens the local service ports.
+2. Starts the PostgreSQL pod with that folder mounted and waits for readiness.
+3. Starts Kafka and the database consumer.
+4. Publishes a full backfill for a new database, or an incremental repair, to
+   Kafka.
+5. Waits for Kafka consumer lag to reach zero and validates database rows.
+6. Starts the live producer.
+7. Starts the aggregator, API, dashboard, and Kafka UI.
+8. Enables scheduled reconciliation.
+9. Starts Kubernetes state metrics, Prometheus, and Grafana.
+10. Opens the local service ports.
 
 First-time setup asks for a PostgreSQL password and saves it in the untracked
 `.env` file. Later starts reuse the same credentials and database.
-
-When upgrading from the former split-environment version, startup stops the
-obsolete development PostgreSQL container and reuses the retained
-`local-data/postgres` files. It also renames the former `weather_db_dev`
-database to `weather_db` without removing its records.
 
 Start without opening local ports:
 
@@ -142,7 +140,7 @@ Shutdown happens in dependency order:
 7. Stop PostgreSQL last.
 
 Shutdown preserves database files, Kafka PVC data and offsets, watermarks,
-credentials, images, and Kubernetes storage definitions.
+credentials, images, and Kubernetes definitions.
 
 ## Persistent storage
 
@@ -154,13 +152,14 @@ local-data/
 └── run/         # Local port-forward logs and process IDs
 ```
 
-`local-data/` and `.env` are excluded from Git. Kubernetes can disappear
-without deleting the PostgreSQL files. Only deleting `local-data/postgres`
-removes the retained database.
+The PostgreSQL pod mounts `local-data/postgres` through Docker Desktop's shared
+host filesystem. Stopping or recreating the pod does not delete that folder.
+Only deleting `local-data/postgres` removes the retained database.
 
-Kafka uses a Kubernetes PersistentVolumeClaim for normal pod restarts.
-PostgreSQL remains the long-term source of truth, and startup reconciliation
-can reconstruct missing Kafka intervals after complete cluster recreation.
+Kafka uses a Kubernetes PersistentVolumeClaim for normal pod restarts. If a
+backfill is interrupted, already acknowledged events remain in Kafka. Restarting
+publishes an overlapping repair window; the consumer safely upserts duplicate
+station/timestamp keys and commits Kafka offsets only after PostgreSQL commits.
 
 ## Database watermarks
 
@@ -208,13 +207,14 @@ git push origin main
 │       ├── dashboard/           # Plotly Dash application and pages
 │       ├── aggregation.py       # PostgreSQL aggregation worker
 │       ├── api.py               # FastAPI service and Prometheus metrics
-│       ├── backfill.py          # Initial and incremental reconciliation
+│       ├── backfill.py          # Historical source-to-Kafka publisher
 │       ├── config.py            # Environment-based configuration
 │       ├── consumer.py          # Kafka-to-PostgreSQL consumer
 │       ├── ingestion_state.py   # Durable ingestion watermark helpers
 │       └── producer.py          # Weather source-to-Kafka producer
 ├── kubernetes/                  # Unified Kubernetes resources
 │   ├── kafka/
+│   ├── postgres/
 │   ├── producer/
 │   ├── consumer/
 │   ├── aggregator/
@@ -223,7 +223,7 @@ git push origin main
 │   ├── kafka-ui/
 │   ├── monitoring/
 │   └── reconciler/
-├── local/                       # Standalone PostgreSQL Compose definition
+├── local/                       # Generated local PostgreSQL pod template
 ├── scripts/                     # Lifecycle implementation
 ├── images/                      # Project screenshots
 ├── previous-version/            # Archived pre-Kubernetes implementation

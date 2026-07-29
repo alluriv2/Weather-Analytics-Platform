@@ -4,7 +4,6 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="weather-python"
-POSTGRES_CONTAINER="weather-postgres-local"
 POSTGRES_DB="weather_db"
 POSTGRES_USER="weather_user"
 KAFKA_GROUP="weather-postgres-consumer-python"
@@ -60,59 +59,6 @@ fi
 
 print_value "Docker:" "$docker_status"
 
-postgres_status="not created"
-
-if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
-    postgres_status="$(
-        docker inspect "$POSTGRES_CONTAINER" \
-            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
-    )"
-fi
-
-print_value "PostgreSQL:" "$postgres_status"
-
-if [[ "$postgres_status" == "healthy" ]]; then
-    latest_database_record="$(
-        docker exec "$POSTGRES_CONTAINER" \
-            psql \
-            --username "$POSTGRES_USER" \
-            --dbname "$POSTGRES_DB" \
-            --tuples-only \
-            --no-align \
-            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
-            2>/dev/null \
-            || echo "query failed"
-    )"
-else
-    latest_database_record="PostgreSQL stopped"
-fi
-
-print_value "Latest DB record:" "$latest_database_record"
-
-if [[ "$postgres_status" == "healthy" ]]; then
-    echo
-    echo "Database watermarks"
-
-    docker exec "$POSTGRES_CONTAINER" \
-        psql \
-        --username "$POSTGRES_USER" \
-        --dbname "$POSTGRES_DB" \
-        --pset pager=off \
-        --command "
-            SELECT
-                station,
-                source_latest_ts,
-                producer_latest_ts,
-                consumer_latest_ts,
-                database_latest_ts,
-                status
-            FROM ingestion_state
-            ORDER BY station;
-        " \
-        2>/dev/null \
-        || echo "Watermark table is not initialized yet."
-fi
-
 kubernetes_status="unavailable"
 
 if kubectl cluster-info >/dev/null 2>&1; then
@@ -131,6 +77,65 @@ fi
 
 print_value "Namespace:" "$NAMESPACE"
 print_value "Kafka topic:" "$KAFKA_TOPIC"
+
+postgres_ready="$(
+    kubectl get statefulset postgres \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.status.readyReplicas}' \
+        2>/dev/null \
+        || echo "0"
+)"
+
+if [[ "${postgres_ready:-0}" -ge 1 ]]; then
+    postgres_status="healthy"
+    latest_database_record="$(
+        kubectl exec \
+            --namespace "$NAMESPACE" \
+            postgres-0 \
+            -- \
+            psql \
+            --username "$POSTGRES_USER" \
+            --dbname "$POSTGRES_DB" \
+            --tuples-only \
+            --no-align \
+            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
+            2>/dev/null \
+            || echo "query failed"
+    )"
+else
+    postgres_status="stopped"
+    latest_database_record="PostgreSQL stopped"
+fi
+
+print_value "PostgreSQL:" "$postgres_status"
+print_value "Latest DB record:" "$latest_database_record"
+
+if [[ "$postgres_status" == "healthy" ]]; then
+    echo
+    echo "Database watermarks"
+
+    kubectl exec \
+        --namespace "$NAMESPACE" \
+        postgres-0 \
+        -- \
+        psql \
+        --username "$POSTGRES_USER" \
+        --dbname "$POSTGRES_DB" \
+        --pset pager=off \
+        --command "
+            SELECT
+                station,
+                source_latest_ts,
+                producer_latest_ts,
+                consumer_latest_ts,
+                database_latest_ts,
+                status
+            FROM ingestion_state
+            ORDER BY station;
+        " \
+        2>/dev/null \
+        || echo "Watermark table is not initialized yet."
+fi
 
 echo
 printf '%-24s %-10s %-10s\n' "WORKLOAD" "DESIRED" "READY"

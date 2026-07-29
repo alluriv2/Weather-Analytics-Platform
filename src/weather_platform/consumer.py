@@ -44,8 +44,57 @@ def parse_dt(raw_dt):
 
 
 # ---------------------------------------------------------
-# PostgreSQL latest table creation
+# PostgreSQL schema creation
 # ---------------------------------------------------------
+
+def create_weather_table(conn):
+    with conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS weather (
+            station TEXT NOT NULL,
+            dt TIMESTAMP NOT NULL,
+            vel_avg_mph DOUBLE PRECISION,
+            vel_min_mph DOUBLE PRECISION,
+            vel_max_mph DOUBLE PRECISION,
+            dir_avg_deg BIGINT,
+            temps_avg_f DOUBLE PRECISION,
+            temps_min_f DOUBLE PRECISION,
+            temps_max_f DOUBLE PRECISION,
+            tempb_avg_f DOUBLE PRECISION,
+            tempb_min_f DOUBLE PRECISION,
+            tempb_max_f DOUBLE PRECISION,
+            hum_avg_pct DOUBLE PRECISION,
+            hum_min_pct DOUBLE PRECISION,
+            hum_max_pct DOUBLE PRECISION,
+            pres_avg_pa BIGINT,
+            pres_min_pa BIGINT,
+            pres_max_pa BIGINT,
+            lux_avg_lx BIGINT,
+            lux_min_lx BIGINT,
+            lux_max_lx BIGINT,
+            rain_inc_count BIGINT,
+            rain_inc_in DOUBLE PRECISION,
+            uptime_seconds BIGINT,
+            millis BIGINT,
+            node_ip TEXT,
+            wifi_ssid TEXT,
+            hostname TEXT,
+            server_rmt_ip TEXT,
+            server_svr_dt TIMESTAMP,
+            PRIMARY KEY (station, dt)
+        );
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_weather_dt
+        ON weather (dt);
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_weather_station_dt
+        ON weather (station, dt DESC);
+        """)
+
+    conn.commit()
+
 
 def create_latest_table(conn):
     with conn.cursor() as cur:
@@ -364,6 +413,7 @@ def main():
 
     try:
         with psycopg.connect(**POSTGRES_CONFIG) as conn:
+            create_weather_table(conn)
             create_latest_table(conn)
             create_ingestion_state_table(conn)
 

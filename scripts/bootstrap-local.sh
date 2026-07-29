@@ -3,17 +3,16 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="weather-platform:0.6.1"
+IMAGE_TAG="weather-platform:0.7.0"
 NAMESPACE="weather-python"
 ENV_FILE="$ROOT_DIR/.env"
 POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
 RUN_DIRECTORY="$ROOT_DIR/local-data/run"
-POSTGRES_COMPOSE_FILE="$ROOT_DIR/local/postgres-compose.yaml"
-POSTGRES_COMPOSE_PROJECT="weather-python"
-POSTGRES_CONTAINER="weather-postgres-local"
-POSTGRES_PORT="5433"
+POSTGRES_TEMPLATE="$ROOT_DIR/local/postgres-statefulset.template.yaml"
+POSTGRES_MANIFEST="$RUN_DIRECTORY/postgres-statefulset.yaml"
 POSTGRES_DB="weather_db"
 POSTGRES_USER="weather_user"
+KAFKA_GROUP="weather-postgres-consumer-python"
 KAFKA_TOPIC="raw_weather_events_python"
 START_PORT_FORWARDS=true
 
@@ -66,7 +65,7 @@ fi
 
 postgres_database_exists=false
 
-if [[ -f "$POSTGRES_DATA_DIR/PG_VERSION" ]]; then
+if [[ -f "$POSTGRES_DATA_DIR/pgdata/PG_VERSION" ]]; then
     postgres_database_exists=true
 fi
 
@@ -115,6 +114,7 @@ fi
 mkdir -p \
     "$POSTGRES_DATA_DIR" \
     "$RUN_DIRECTORY"
+touch "$POSTGRES_DATA_DIR/.weather-host-volume"
 
 stop_registered_port_forwards() {
     local pid_file
@@ -144,112 +144,6 @@ echo
 echo "==> Building the application image from the current source"
 docker build -t "$IMAGE_TAG" .
 
-if docker inspect weather-postgres-python-dev >/dev/null 2>&1; then
-    dev_postgres_running="$(
-        docker inspect weather-postgres-python-dev \
-            --format '{{.State.Running}}'
-    )"
-
-    if [[ "$dev_postgres_running" == "true" ]]; then
-        echo
-        echo "==> Stopping the obsolete development PostgreSQL container"
-        docker stop weather-postgres-python-dev >/dev/null
-    fi
-fi
-
-export WEATHER_DB_PASSWORD
-
-echo
-echo "==> Starting cluster-independent PostgreSQL"
-docker compose \
-    --project-name "$POSTGRES_COMPOSE_PROJECT" \
-    --file "$POSTGRES_COMPOSE_FILE" \
-    up -d
-
-postgres_health=""
-
-for _ in {1..60}; do
-    postgres_health="$(
-        docker inspect "$POSTGRES_CONTAINER" \
-            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-            2>/dev/null \
-            || true
-    )"
-
-    if [[ "$postgres_health" == "healthy" ]]; then
-        break
-    fi
-
-    sleep 2
-done
-
-if [[ "$postgres_health" != "healthy" ]]; then
-    echo "PostgreSQL did not become healthy." >&2
-    docker logs "$POSTGRES_CONTAINER" --tail 100 >&2 || true
-    exit 1
-fi
-
-database_exists="$(
-    docker exec \
-        --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
-        "$POSTGRES_CONTAINER" \
-        psql \
-        --host 127.0.0.1 \
-        --username "$POSTGRES_USER" \
-        --dbname postgres \
-        --tuples-only \
-        --no-align \
-        --command "SELECT 1 FROM pg_database WHERE datname = '$POSTGRES_DB';" \
-        2>/dev/null \
-        || true
-)"
-
-legacy_database_exists="$(
-    docker exec \
-        --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
-        "$POSTGRES_CONTAINER" \
-        psql \
-        --host 127.0.0.1 \
-        --username "$POSTGRES_USER" \
-        --dbname postgres \
-        --tuples-only \
-        --no-align \
-        --command "SELECT 1 FROM pg_database WHERE datname = 'weather_db_dev';" \
-        2>/dev/null \
-        || true
-)"
-
-if [[ "$database_exists" != "1" && "$legacy_database_exists" == "1" ]]; then
-    echo "==> Renaming the retained database from weather_db_dev to weather_db"
-    docker exec \
-        --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
-        "$POSTGRES_CONTAINER" \
-        psql \
-        --host 127.0.0.1 \
-        --username "$POSTGRES_USER" \
-        --dbname postgres \
-        --command "ALTER DATABASE weather_db_dev RENAME TO weather_db;"
-fi
-
-if ! docker run \
-    --rm \
-    --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
-    postgres:17 \
-    psql \
-    --host host.docker.internal \
-    --port "$POSTGRES_PORT" \
-    --username "$POSTGRES_USER" \
-    --dbname "$POSTGRES_DB" \
-    --no-password \
-    --command "SELECT 1;" \
-    >/dev/null 2>&1; then
-    echo "PostgreSQL started, but the configured credentials could not open the database." >&2
-    echo "Restore the password originally used to initialize local-data/postgres." >&2
-    exit 1
-fi
-
-echo "PostgreSQL is ready."
-
 echo
 echo "==> Creating the unified Kubernetes namespace and credentials"
 kubectl apply -f "$ROOT_DIR/kubernetes/namespace.yaml"
@@ -266,10 +160,43 @@ echo
 echo "==> Applying the unified application configuration"
 kubectl apply -k "$ROOT_DIR/kubernetes"
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    postgres_node_path="/run/desktop/mnt/host${POSTGRES_DATA_DIR}"
+else
+    postgres_node_path="$POSTGRES_DATA_DIR"
+fi
+
+escaped_postgres_node_path="$(
+    printf '%s' "$postgres_node_path" \
+        | sed 's/[&|]/\\&/g'
+)"
+sed \
+    "s|__POSTGRES_HOST_PATH__|$escaped_postgres_node_path|" \
+    "$POSTGRES_TEMPLATE" \
+    >"$POSTGRES_MANIFEST"
+kubectl apply -f "$POSTGRES_MANIFEST"
+
 kubectl patch cronjob weather-reconciler \
     --namespace "$NAMESPACE" \
     --type merge \
     --patch '{"spec":{"suspend":true}}'
+
+echo
+echo "==> Starting PostgreSQL in Kubernetes"
+kubectl scale statefulset/postgres \
+    --namespace "$NAMESPACE" \
+    --replicas=1
+
+if ! kubectl rollout status statefulset/postgres \
+    --namespace "$NAMESPACE" \
+    --timeout=300s; then
+    kubectl logs postgres-0 \
+        --namespace "$NAMESPACE" \
+        --tail=100 \
+        >&2 \
+        || true
+    exit 1
+fi
 
 echo
 echo "==> Starting Kafka"
@@ -281,8 +208,30 @@ kubectl rollout status statefulset/kafka \
     --namespace "$NAMESPACE" \
     --timeout=300s
 
+kubectl exec \
+    --namespace "$NAMESPACE" \
+    kafka-0 \
+    -- \
+    /opt/kafka/bin/kafka-topics.sh \
+    --bootstrap-server localhost:9092 \
+    --create \
+    --if-not-exists \
+    --topic "$KAFKA_TOPIC" \
+    --partitions 1 \
+    --replication-factor 1
+
 echo
-echo "==> Running full or incremental database reconciliation"
+echo "==> Starting the Kafka-to-PostgreSQL consumer"
+kubectl scale deployment/weather-consumer \
+    --namespace "$NAMESPACE" \
+    --replicas=1
+
+kubectl rollout status deployment/weather-consumer \
+    --namespace "$NAMESPACE" \
+    --timeout=180s
+
+echo
+echo "==> Publishing full or incremental backfill through Kafka"
 kubectl delete job initial-backfill \
     --namespace "$NAMESPACE" \
     --ignore-not-found \
@@ -312,18 +261,72 @@ kubectl logs job/initial-backfill \
     --tail=30
 
 echo
-echo "==> Starting ingestion"
-kubectl scale \
-    deployment/weather-producer \
-    deployment/weather-consumer \
+echo "==> Waiting for the consumer to commit every backfill event"
+backfill_drained=false
+
+for _ in {1..900}; do
+    current_lag="$(
+        kubectl exec \
+            --namespace "$NAMESPACE" \
+            kafka-0 \
+            -- \
+            /opt/kafka/bin/kafka-consumer-groups.sh \
+            --bootstrap-server localhost:9092 \
+            --describe \
+            --group "$KAFKA_GROUP" \
+            2>/dev/null \
+            | awk -v topic="$KAFKA_TOPIC" \
+                '$2 == topic && $6 ~ /^[0-9]+$/ {lag += $6; found = 1} END {if (found) print lag; else print -1}'
+    )"
+
+    if [[ "$current_lag" == "0" ]]; then
+        backfill_drained=true
+        break
+    fi
+
+    sleep 2
+done
+
+if [[ "$backfill_drained" != true ]]; then
+    echo "The Kafka backfill was published, but the consumer did not drain it." >&2
+    kubectl logs deployment/weather-consumer \
+        --namespace "$NAMESPACE" \
+        --tail=120 \
+        >&2 \
+        || true
+    exit 1
+fi
+
+database_rows="$(
+    kubectl exec \
+        --namespace "$NAMESPACE" \
+        postgres-0 \
+        -- \
+        psql \
+        --username "$POSTGRES_USER" \
+        --dbname "$POSTGRES_DB" \
+        --tuples-only \
+        --no-align \
+        --command "SELECT COUNT(*) FROM weather;"
+)"
+
+if [[ ! "$database_rows" =~ ^[0-9]+$ ]] \
+    || [[ "$database_rows" -eq 0 ]]; then
+    echo "Backfill validation failed: the weather table is empty." >&2
+    exit 1
+fi
+
+echo "Kafka backfill consumed successfully: $database_rows database rows."
+
+echo
+echo "==> Starting live ingestion"
+kubectl scale deployment/weather-producer \
     --namespace "$NAMESPACE" \
     --replicas=1
 
-for deployment in weather-producer weather-consumer; do
-    kubectl rollout status "deployment/$deployment" \
-        --namespace "$NAMESPACE" \
-        --timeout=180s
-done
+kubectl rollout status deployment/weather-producer \
+    --namespace "$NAMESPACE" \
+    --timeout=180s
 
 echo
 echo "==> Starting application services"
