@@ -1,7 +1,8 @@
 FROM python:3.12.13-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src
 
 WORKDIR /app
 
@@ -15,4 +16,4 @@ COPY --chown=weather:weather . .
 
 USER 10001:10001
 
-CMD ["python", "weather_kafka_producer.py"]
+CMD ["python", "-m", "weather_platform.producer"]

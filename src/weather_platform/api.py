@@ -11,7 +11,7 @@ from prometheus_client import (
     generate_latest,
 )
 
-from config import POSTGRES_CONFIG
+from weather_platform.config import POSTGRES_CONFIG
 
 
 app = FastAPI(

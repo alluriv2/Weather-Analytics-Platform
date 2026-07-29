@@ -44,7 +44,7 @@ The runtime uses one Kubernetes namespace and one Kafka topic:
 | Kafka topic | `raw_weather_events_python` |
 | Consumer group | `weather-postgres-consumer-python` |
 
-All custom Python components share the `weather-platform:0.5.4` image. Each
+All custom Python components share the `weather-platform:0.6.1` image. Each
 component runs that image with a different command. PostgreSQL, Kafka, and
 Kafka UI use their own specialized images.
 
@@ -203,9 +203,17 @@ git push origin main
 
 ```text
 .
-├── dashboard/                   # Plotly Dash application
+├── src/
+│   └── weather_platform/        # Installable-style Python package
+│       ├── dashboard/           # Plotly Dash application and pages
+│       ├── aggregation.py       # PostgreSQL aggregation worker
+│       ├── api.py               # FastAPI service and Prometheus metrics
+│       ├── backfill.py          # Initial and incremental reconciliation
+│       ├── config.py            # Environment-based configuration
+│       ├── consumer.py          # Kafka-to-PostgreSQL consumer
+│       ├── ingestion_state.py   # Durable ingestion watermark helpers
+│       └── producer.py          # Weather source-to-Kafka producer
 ├── kubernetes/                  # Unified Kubernetes resources
-│   ├── postgres/
 │   ├── kafka/
 │   ├── producer/
 │   ├── consumer/
@@ -215,19 +223,15 @@ git push origin main
 │   ├── kafka-ui/
 │   ├── monitoring/
 │   └── reconciler/
-├── scripts/
-│   └── bootstrap-local.sh
-├── start
-├── stop
-├── report
-├── previous-version/
-├── Dockerfile
-├── ingestion_state.py
-├── inital_backfill.py
-├── weather_aggregation_postgres.py
-├── weather_api.py
-├── weather_kafka_consumer.py
-└── weather_kafka_producer.py
+├── local/                       # Standalone PostgreSQL Compose definition
+├── scripts/                     # Lifecycle implementation
+├── images/                      # Project screenshots
+├── previous-version/            # Archived pre-Kubernetes implementation
+├── Dockerfile                   # Shared Python application image
+├── requirements.txt
+├── start                        # Start the complete local platform
+├── stop                         # Stop while retaining state
+└── report                       # Read-only runtime report
 ```
 
 For detailed operations, see

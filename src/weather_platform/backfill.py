@@ -14,14 +14,14 @@ from bs4 import BeautifulSoup
 # Configuration
 # ---------------------------------------------------------
 
-from config import (
+from weather_platform.config import (
     BACKFILL_BATCH_SIZE,
     POSTGRES_CONFIG,
     RESET_WEATHER_TABLE,
     RECONCILIATION_LOOKBACK_DAYS,
     STATION_URLS,
 )
-from ingestion_state import (
+from weather_platform.ingestion_state import (
     create_ingestion_state_table,
     database_latest,
     load_watermarks,

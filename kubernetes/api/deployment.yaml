@@ -25,7 +25,7 @@ spec:
         runAsGroup: 10001
       containers:
         - name: api
-          image: weather-platform:0.5.4
+          image: weather-platform:0.6.1
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -35,7 +35,7 @@ spec:
             readOnlyRootFilesystem: true
           command:
             - uvicorn
-            - weather_api:app
+            - weather_platform.api:app
             - --host
             - "0.0.0.0"
             - --port

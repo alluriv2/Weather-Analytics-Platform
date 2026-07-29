@@ -1,4 +1,8 @@
 .git
+.gitnexus/
+.claude/
+AGENTS.md
+CLAUDE.md
 .env
 __pycache__/
 *.pyc

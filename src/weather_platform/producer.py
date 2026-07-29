@@ -8,7 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 from confluent_kafka import KafkaException, Producer
 
-from config import (
+from weather_platform.config import (
     KAFKA_BOOTSTRAP_SERVERS,
     KAFKA_CLIENT_ID,
     KAFKA_TOPIC,
@@ -16,7 +16,7 @@ from config import (
     STATION_URLS,
     POSTGRES_CONFIG,
 )
-from ingestion_state import (
+from weather_platform.ingestion_state import (
     create_ingestion_state_table,
     database_latest,
     load_watermarks,

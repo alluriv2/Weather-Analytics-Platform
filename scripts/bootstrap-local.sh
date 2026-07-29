@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="weather-platform:0.5.4"
+IMAGE_TAG="weather-platform:0.6.1"
 NAMESPACE="weather-python"
 ENV_FILE="$ROOT_DIR/.env"
 POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"

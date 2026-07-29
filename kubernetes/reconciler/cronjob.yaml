@@ -30,7 +30,7 @@ spec:
             runAsGroup: 10001
           containers:
             - name: reconciler
-              image: weather-platform:0.5.4
+              image: weather-platform:0.6.1
               imagePullPolicy: IfNotPresent
               securityContext:
                 allowPrivilegeEscalation: false
@@ -40,7 +40,8 @@ spec:
                 readOnlyRootFilesystem: true
               command:
                 - python
-                - inital_backfill.py
+                - -m
+                - weather_platform.backfill
               envFrom:
                 - configMapRef:
                     name: weather-config

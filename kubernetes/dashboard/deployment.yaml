@@ -25,7 +25,7 @@ spec:
         runAsGroup: 10001
       containers:
         - name: dashboard
-          image: weather-platform:0.5.4
+          image: weather-platform:0.6.1
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -37,8 +37,8 @@ spec:
             - python
             - -c
             - >-
-              from dashboard.app import app;
-              from config import DASH_HOST, DASH_PORT;
+              from weather_platform.dashboard.app import app;
+              from weather_platform.config import DASH_HOST, DASH_PORT;
               app.run(host=DASH_HOST, port=DASH_PORT, debug=False)
           env:
             - name: PYTHONUNBUFFERED

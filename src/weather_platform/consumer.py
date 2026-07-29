@@ -9,13 +9,13 @@ from confluent_kafka import Consumer, KafkaError, KafkaException
 # Configuration
 # ---------------------------------------------------------
 
-from config import (
+from weather_platform.config import (
     POSTGRES_CONFIG,
     KAFKA_BOOTSTRAP_SERVERS,
     KAFKA_TOPIC,
     KAFKA_CONSUMER_GROUP,
 )
-from ingestion_state import (
+from weather_platform.ingestion_state import (
     create_ingestion_state_table,
     record_consumer_watermark,
 )

@@ -13,7 +13,7 @@ from dash import (
     register_page,
 )
 
-from config import API_BASE_URL
+from weather_platform.config import API_BASE_URL
 
 
 # ---------------------------------------------------------

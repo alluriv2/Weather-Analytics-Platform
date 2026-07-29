@@ -40,7 +40,7 @@ kubectl apply --dry-run=client -k kubernetes
 ./stop
 ```
 
-`./start` always rebuilds `weather-platform:0.5.4`, starts the retained
+`./start` always rebuilds `weather-platform:0.6.1`, starts the retained
 PostgreSQL container, applies the manifests with application workloads stopped,
 then starts components in this order:
 

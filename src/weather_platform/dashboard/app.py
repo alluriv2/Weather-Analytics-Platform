@@ -1,6 +1,6 @@
 from dash import Dash, html, page_container
 
-from config import DASH_HOST, DASH_PORT
+from weather_platform.config import DASH_HOST, DASH_PORT
 
 
 app = Dash(

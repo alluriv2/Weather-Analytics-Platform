@@ -7,7 +7,7 @@ from datetime import datetime
 # Configuration
 # ---------------------------------------------------------
 
-from config import POSTGRES_CONFIG
+from weather_platform.config import POSTGRES_CONFIG
 
 AGGREGATION_INTERVAL_SECONDS = 60
 # ---------------------------------------------------------
