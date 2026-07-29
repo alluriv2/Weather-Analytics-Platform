@@ -9,6 +9,7 @@ __pycache__/
 *.log
 .DS_Store
 spark/
+.venv/
 kafka-storage/
 producer_state.json
 previous-version/
