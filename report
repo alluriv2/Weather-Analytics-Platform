@@ -226,5 +226,13 @@ if port_forward_running kafka-ui; then
     echo "Kafka UI:  http://127.0.0.1:18080"
 fi
 
+if port_forward_running prometheus; then
+    echo "Prometheus: http://127.0.0.1:19090"
+fi
+
+if port_forward_running grafana; then
+    echo "Grafana:    http://127.0.0.1:13000"
+fi
+
 echo
 echo "This command made no changes."

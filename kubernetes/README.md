@@ -16,6 +16,9 @@ The manifests in `kubernetes/` deploy the complete Weather Platform to the
 | Dashboard | Deployment and Service | Stateless |
 | Kafka UI | Deployment and Service | Stateless |
 | Reconciler | CronJob and startup Job | Watermarks in PostgreSQL |
+| Prometheus | Deployment and Service | Seven-day in-pod metrics window |
+| Grafana | Deployment and Service | Provisioned dashboard |
+| kube-state-metrics | Deployment and Service | Stateless |
 
 Docker Desktop Kubernetes runs inside a `kind` node container and cannot
 directly mount arbitrary macOS repository folders. PostgreSQL therefore runs
@@ -37,7 +40,7 @@ kubectl apply --dry-run=client -k kubernetes
 ./stop
 ```
 
-`./start` always rebuilds `weather-platform:0.5.3`, starts the retained
+`./start` always rebuilds `weather-platform:0.5.4`, starts the retained
 PostgreSQL container, applies the manifests with application workloads stopped,
 then starts components in this order:
 
@@ -48,6 +51,7 @@ PostgreSQL
 → producer and consumer
 → aggregator, API, dashboard, and Kafka UI
 → scheduled reconciliation
+→ Prometheus and Grafana monitoring
 ```
 
 `./stop` reverses the dependency order, scales Kafka to zero, and stops
@@ -62,6 +66,18 @@ kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
 
 docker ps --filter name=weather-postgres-local
 ```
+
+Monitoring:
+
+```text
+Prometheus: http://127.0.0.1:19090
+Grafana:    http://127.0.0.1:13000
+API metrics: http://127.0.0.1:18000/metrics
+```
+
+Prometheus scrapes the weather API, Kubernetes object state, kubelet metrics,
+and container metrics. Grafana automatically loads the Weather Platform
+dashboard; no manual data-source setup is required.
 
 Kafka consumer lag:
 

@@ -18,3 +18,9 @@ resources:
   - dashboard/deployment.yaml
   - kafka-ui/service.yaml
   - kafka-ui/deployment.yaml
+  - monitoring/prometheus-rbac.yaml
+  - monitoring/prometheus-config.yaml
+  - monitoring/prometheus.yaml
+  - monitoring/kube-state-metrics.yaml
+  - monitoring/grafana-config.yaml
+  - monitoring/grafana.yaml

@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="weather-platform:0.5.3"
+IMAGE_TAG="weather-platform:0.5.4"
 NAMESPACE="weather-python"
 ENV_FILE="$ROOT_DIR/.env"
 POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
@@ -328,6 +328,21 @@ kubectl patch cronjob weather-reconciler \
     --type merge \
     --patch '{"spec":{"suspend":false}}'
 
+echo
+echo "==> Starting monitoring"
+kubectl scale \
+    deployment/kube-state-metrics \
+    deployment/prometheus \
+    deployment/grafana \
+    --namespace "$NAMESPACE" \
+    --replicas=1
+
+for deployment in kube-state-metrics prometheus grafana; do
+    kubectl rollout status "deployment/$deployment" \
+        --namespace "$NAMESPACE" \
+        --timeout=180s
+done
+
 start_port_forward() {
     local service_name="$1"
     local local_port="$2"
@@ -388,6 +403,8 @@ if [[ "$START_PORT_FORWARDS" == true ]]; then
     start_port_forward weather-dashboard 18050 8050
     start_port_forward weather-api 18000 8000
     start_port_forward kafka-ui 18080 8080
+    start_port_forward prometheus 19090 9090
+    start_port_forward grafana 13000 3000
 fi
 
 echo
@@ -403,6 +420,8 @@ if [[ "$START_PORT_FORWARDS" == true ]]; then
     echo "API:              http://127.0.0.1:18000"
     echo "Ingestion status: http://127.0.0.1:18000/ingestion-status"
     echo "Kafka UI:         http://127.0.0.1:18080"
+    echo "Prometheus:       http://127.0.0.1:19090"
+    echo "Grafana:          http://127.0.0.1:13000"
 fi
 
 echo

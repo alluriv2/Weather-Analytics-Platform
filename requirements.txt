@@ -10,3 +10,4 @@ requests==2.34.2
 httpx==0.28.1
 beautifulsoup4==4.15.0
 python-dotenv==1.2.2
+prometheus-client==0.25.0

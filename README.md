@@ -6,6 +6,8 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-REST-009688)
 ![Plotly Dash](https://img.shields.io/badge/Plotly-Dash-purple)
+![Prometheus](https://img.shields.io/badge/Prometheus-Metrics-E6522C)
+![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800)
 
 A containerized weather ingestion and analytics platform. Kubernetes manages
 Kafka and the Python services. Docker runs PostgreSQL with repository-local
@@ -26,8 +28,12 @@ Remote weather stations
                          ▼                         ▼
                     Aggregator                 FastAPI
                                                    │
-                                                   ▼
-                                             Dashboard
+                                      ┌────────────┴────────────┐
+                                      ▼                         ▼
+                                  Dashboard                 Prometheus
+                                                                │
+                                                                ▼
+                                                             Grafana
 ```
 
 The runtime uses one Kubernetes namespace and one Kafka topic:
@@ -38,7 +44,7 @@ The runtime uses one Kubernetes namespace and one Kafka topic:
 | Kafka topic | `raw_weather_events_python` |
 | Consumer group | `weather-postgres-consumer-python` |
 
-All custom Python components share the `weather-platform:0.5.3` image. Each
+All custom Python components share the `weather-platform:0.5.4` image. Each
 component runs that image with a different command. PostgreSQL, Kafka, and
 Kafka UI use their own specialized images.
 
@@ -75,7 +81,9 @@ source. It then:
    from the retained timestamps.
 5. Starts the producer and consumer.
 6. Starts the aggregator, API, dashboard, and Kafka UI.
-7. Enables scheduled reconciliation and opens the local service ports.
+7. Enables scheduled reconciliation.
+8. Starts Kubernetes state metrics, Prometheus, and Grafana.
+9. Opens the local service ports.
 
 First-time setup asks for a PostgreSQL password and saves it in the untracked
 `.env` file. Later starts reuse the same credentials and database.
@@ -100,6 +108,12 @@ Start without opening local ports:
 | API documentation | <http://127.0.0.1:18000/docs> |
 | Ingestion status | <http://127.0.0.1:18000/ingestion-status> |
 | Kafka UI | <http://127.0.0.1:18080> |
+| Prometheus | <http://127.0.0.1:19090> |
+| Grafana | <http://127.0.0.1:13000> |
+
+Prometheus collects API health, request rate, response time, ingestion gaps,
+database reachability, pod state, restarts, CPU, and memory. Grafana opens with
+a provisioned Weather Platform dashboard backed by those Prometheus metrics.
 
 ## Report
 
@@ -123,7 +137,7 @@ Shutdown happens in dependency order:
 2. Suspend reconciliation.
 3. Stop the producer.
 4. Allow the consumer to drain pending Kafka messages.
-5. Stop the consumer and application services.
+5. Stop the consumer, application services, and monitoring.
 6. Stop Kafka.
 7. Stop PostgreSQL last.
 
@@ -199,6 +213,7 @@ git push origin main
 │   ├── api/
 │   ├── dashboard/
 │   ├── kafka-ui/
+│   ├── monitoring/
 │   └── reconciler/
 ├── scripts/
 │   └── bootstrap-local.sh
