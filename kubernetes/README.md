@@ -7,7 +7,7 @@ The manifests in `kubernetes/` deploy the complete Weather Platform to the
 
 | Component | Kubernetes resource | Persistence |
 | --- | --- | --- |
-| PostgreSQL | StatefulSet | Host-mounted `local-data/postgres` |
+| PostgreSQL | External Docker container | `local-data/postgres` |
 | Kafka | StatefulSet | Kubernetes PVC |
 | Producer | Deployment | Watermark in PostgreSQL |
 | Consumer | Deployment | Offset in Kafka and watermark in PostgreSQL |
@@ -20,11 +20,11 @@ The manifests in `kubernetes/` deploy the complete Weather Platform to the
 | Grafana | Deployment and Service | Provisioned dashboard |
 | kube-state-metrics | Deployment and Service | Stateless |
 
-At startup, the local PostgreSQL StatefulSet is generated from
-`local/postgres-statefulset.template.yaml`. Its `hostPath` points through
-Docker Desktop's shared host filesystem to this clone's
-`local-data/postgres` folder. The pod lifecycle is controlled by Kubernetes;
-the database files are controlled by the user.
+At startup, Docker Compose starts PostgreSQL and bind-mounts this clone's
+`local-data/postgres` folder. Kubernetes reaches the database through
+`host.docker.internal:5433`. This keeps the database independent of the
+Docker Desktop Kubernetes cluster while Kafka and the Python workloads remain
+Kubernetes-managed.
 
 ## Render and validate
 
@@ -41,8 +41,8 @@ kubectl apply --dry-run=client -k kubernetes
 ./stop
 ```
 
-`./start` always rebuilds `weather-platform:0.7.0`, generates the local
-PostgreSQL manifest, applies workloads in a stopped state, then starts:
+`./start` always rebuilds `weather-platform:0.7.1`, starts PostgreSQL through
+Docker Compose, applies Kubernetes workloads in a stopped state, then starts:
 
 ```text
 PostgreSQL
@@ -56,8 +56,9 @@ PostgreSQL
 → Prometheus and Grafana monitoring
 ```
 
-`./stop` reverses the dependency order and scales PostgreSQL down last. It does
-not delete the namespace, Kafka PVC, Secret, PostgreSQL data folder, or images.
+`./stop` reverses the dependency order and stops the PostgreSQL container last.
+It does not delete the namespace, Kafka PVC, Secret, PostgreSQL data folder, or
+images.
 
 ## Verify
 
@@ -65,7 +66,7 @@ not delete the namespace, Kafka PVC, Secret, PostgreSQL data folder, or images.
 kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
   --namespace weather-python
 
-kubectl get statefulset/postgres pod/postgres-0 --namespace weather-python
+docker ps --filter name=weather-postgres-local
 ```
 
 Monitoring:

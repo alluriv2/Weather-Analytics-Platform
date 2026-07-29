@@ -137,19 +137,22 @@ if kubectl cluster-info >/dev/null 2>&1 \
         wait_for_pods_to_stop "app.kubernetes.io/name=kafka"
     fi
 
-    echo
-    echo "==> Stopping PostgreSQL"
-
-    if kubectl get statefulset postgres \
-        --namespace "$NAMESPACE" >/dev/null 2>&1; then
-        kubectl scale statefulset/postgres \
-            --namespace "$NAMESPACE" \
-            --replicas=0
-        wait_for_pods_to_stop "app.kubernetes.io/name=postgres"
-    fi
-
 else
     echo "Kubernetes is unavailable; no Kubernetes workloads can be changed."
+fi
+
+echo
+echo "==> Stopping PostgreSQL"
+
+if docker inspect weather-postgres-local >/dev/null 2>&1; then
+    postgres_running="$(
+        docker inspect weather-postgres-local \
+            --format '{{.State.Running}}'
+    )"
+
+    if [[ "$postgres_running" == "true" ]]; then
+        docker stop weather-postgres-local >/dev/null
+    fi
 fi
 
 echo

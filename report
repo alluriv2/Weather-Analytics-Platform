@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="weather-python"
+POSTGRES_CONTAINER="weather-postgres-local"
 POSTGRES_DB="weather_db"
 POSTGRES_USER="weather_user"
 KAFKA_GROUP="weather-postgres-consumer-python"
@@ -59,40 +60,20 @@ fi
 
 print_value "Docker:" "$docker_status"
 
-kubernetes_status="unavailable"
+postgres_status="not created"
 
-if kubectl cluster-info >/dev/null 2>&1; then
-    kubernetes_status="running"
+if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+    postgres_status="$(
+        docker inspect "$POSTGRES_CONTAINER" \
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
+    )"
 fi
 
-print_value "Kubernetes:" "$kubernetes_status"
+print_value "PostgreSQL:" "$postgres_status"
 
-if [[ "$kubernetes_status" != "running" ]] \
-    || ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
-    print_value "Namespace:" "unavailable"
-    echo
-    echo "This command made no changes."
-    exit 0
-fi
-
-print_value "Namespace:" "$NAMESPACE"
-print_value "Kafka topic:" "$KAFKA_TOPIC"
-
-postgres_ready="$(
-    kubectl get statefulset postgres \
-        --namespace "$NAMESPACE" \
-        --output jsonpath='{.status.readyReplicas}' \
-        2>/dev/null \
-        || echo "0"
-)"
-
-if [[ "${postgres_ready:-0}" -ge 1 ]]; then
-    postgres_status="healthy"
+if [[ "$postgres_status" == "healthy" ]]; then
     latest_database_record="$(
-        kubectl exec \
-            --namespace "$NAMESPACE" \
-            postgres-0 \
-            -- \
+        docker exec "$POSTGRES_CONTAINER" \
             psql \
             --username "$POSTGRES_USER" \
             --dbname "$POSTGRES_DB" \
@@ -103,21 +84,16 @@ if [[ "${postgres_ready:-0}" -ge 1 ]]; then
             || echo "query failed"
     )"
 else
-    postgres_status="stopped"
     latest_database_record="PostgreSQL stopped"
 fi
 
-print_value "PostgreSQL:" "$postgres_status"
 print_value "Latest DB record:" "$latest_database_record"
 
 if [[ "$postgres_status" == "healthy" ]]; then
     echo
     echo "Database watermarks"
 
-    kubectl exec \
-        --namespace "$NAMESPACE" \
-        postgres-0 \
-        -- \
+    docker exec "$POSTGRES_CONTAINER" \
         psql \
         --username "$POSTGRES_USER" \
         --dbname "$POSTGRES_DB" \
@@ -136,6 +112,25 @@ if [[ "$postgres_status" == "healthy" ]]; then
         2>/dev/null \
         || echo "Watermark table is not initialized yet."
 fi
+
+kubernetes_status="unavailable"
+
+if kubectl cluster-info >/dev/null 2>&1; then
+    kubernetes_status="running"
+fi
+
+print_value "Kubernetes:" "$kubernetes_status"
+
+if [[ "$kubernetes_status" != "running" ]] \
+    || ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    print_value "Namespace:" "unavailable"
+    echo
+    echo "This command made no changes."
+    exit 0
+fi
+
+print_value "Namespace:" "$NAMESPACE"
+print_value "Kafka topic:" "$KAFKA_TOPIC"
 
 echo
 printf '%-24s %-10s %-10s\n' "WORKLOAD" "DESIRED" "READY"

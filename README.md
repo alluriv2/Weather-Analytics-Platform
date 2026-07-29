@@ -10,9 +10,9 @@
 ![Grafana](https://img.shields.io/badge/Grafana-Dashboards-F46800)
 
 A containerized weather ingestion and analytics platform. Kubernetes manages
-PostgreSQL, Kafka, and every Python service. PostgreSQL runs in a pod but mounts
-repository-local storage, so its source-of-truth files remain outside the
-cluster lifecycle.
+Kafka and every Python service. PostgreSQL runs as an external Docker service
+with repository-local storage, so its source-of-truth files remain outside the
+Kubernetes cluster lifecycle.
 
 ## Architecture
 
@@ -46,7 +46,7 @@ The runtime uses one Kubernetes namespace and one Kafka topic:
 | Kafka topic | `raw_weather_events_python` |
 | Consumer group | `weather-postgres-consumer-python` |
 
-All custom Python components share the `weather-platform:0.7.0` image. Each
+All custom Python components share the `weather-platform:0.7.1` image. Each
 component runs that image with a different command. PostgreSQL, Kafka, and
 Kafka UI use their own specialized images.
 
@@ -77,7 +77,7 @@ Every normal start rebuilds the Python image from the currently checked-out
 source. It then:
 
 1. Creates repository-local database storage when needed.
-2. Starts the PostgreSQL pod with that folder mounted and waits for readiness.
+2. Starts the external PostgreSQL container and waits for readiness.
 3. Starts Kafka and the database consumer.
 4. Publishes a full backfill for a new database, or an incremental repair, to
    Kafka.
@@ -152,9 +152,10 @@ local-data/
 └── run/         # Local port-forward logs and process IDs
 ```
 
-The PostgreSQL pod mounts `local-data/postgres` through Docker Desktop's shared
-host filesystem. Stopping or recreating the pod does not delete that folder.
-Only deleting `local-data/postgres` removes the retained database.
+The PostgreSQL container bind-mounts `local-data/postgres` through Docker
+Desktop. Kubernetes workloads connect to it through
+`host.docker.internal:5433`. Stopping or recreating Kubernetes does not delete
+that folder. Only deleting `local-data/postgres` removes the retained database.
 
 Kafka uses a Kubernetes PersistentVolumeClaim for normal pod restarts. If a
 backfill is interrupted, already acknowledged events remain in Kafka. Restarting
@@ -214,7 +215,6 @@ git push origin main
 │       └── producer.py          # Weather source-to-Kafka producer
 ├── kubernetes/                  # Unified Kubernetes resources
 │   ├── kafka/
-│   ├── postgres/
 │   ├── producer/
 │   ├── consumer/
 │   ├── aggregator/
@@ -223,7 +223,7 @@ git push origin main
 │   ├── kafka-ui/
 │   ├── monitoring/
 │   └── reconciler/
-├── local/                       # Generated local PostgreSQL pod template
+├── local/                       # External PostgreSQL Compose definition
 ├── scripts/                     # Lifecycle implementation
 ├── images/                      # Project screenshots
 ├── previous-version/            # Archived pre-Kubernetes implementation

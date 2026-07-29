@@ -3,13 +3,15 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_TAG="weather-platform:0.7.0"
+IMAGE_TAG="weather-platform:0.7.1"
 NAMESPACE="weather-python"
 ENV_FILE="$ROOT_DIR/.env"
 POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
 RUN_DIRECTORY="$ROOT_DIR/local-data/run"
-POSTGRES_TEMPLATE="$ROOT_DIR/local/postgres-statefulset.template.yaml"
-POSTGRES_MANIFEST="$RUN_DIRECTORY/postgres-statefulset.yaml"
+POSTGRES_COMPOSE_FILE="$ROOT_DIR/local/postgres-compose.yaml"
+POSTGRES_COMPOSE_PROJECT="weather-python"
+POSTGRES_CONTAINER="weather-postgres-local"
+POSTGRES_PORT="5433"
 POSTGRES_DB="weather_db"
 POSTGRES_USER="weather_user"
 KAFKA_GROUP="weather-postgres-consumer-python"
@@ -65,7 +67,7 @@ fi
 
 postgres_database_exists=false
 
-if [[ -f "$POSTGRES_DATA_DIR/pgdata/PG_VERSION" ]]; then
+if [[ -f "$POSTGRES_DATA_DIR/PG_VERSION" ]]; then
     postgres_database_exists=true
 fi
 
@@ -114,7 +116,7 @@ fi
 mkdir -p \
     "$POSTGRES_DATA_DIR" \
     "$RUN_DIRECTORY"
-touch "$POSTGRES_DATA_DIR/.weather-host-volume"
+rm -f "$POSTGRES_DATA_DIR/.weather-host-volume"
 
 stop_registered_port_forwards() {
     local pid_file
@@ -144,6 +146,57 @@ echo
 echo "==> Building the application image from the current source"
 docker build -t "$IMAGE_TAG" .
 
+export WEATHER_DB_PASSWORD
+
+echo
+echo "==> Starting cluster-independent PostgreSQL"
+docker compose \
+    --project-name "$POSTGRES_COMPOSE_PROJECT" \
+    --file "$POSTGRES_COMPOSE_FILE" \
+    up -d
+
+postgres_health=""
+
+for _ in {1..60}; do
+    postgres_health="$(
+        docker inspect "$POSTGRES_CONTAINER" \
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+            2>/dev/null \
+            || true
+    )"
+
+    if [[ "$postgres_health" == "healthy" ]]; then
+        break
+    fi
+
+    sleep 2
+done
+
+if [[ "$postgres_health" != "healthy" ]]; then
+    echo "PostgreSQL did not become healthy." >&2
+    docker logs "$POSTGRES_CONTAINER" --tail 100 >&2 || true
+    exit 1
+fi
+
+if ! docker run \
+    --rm \
+    --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+    postgres:17 \
+    psql \
+    --host host.docker.internal \
+    --port "$POSTGRES_PORT" \
+    --username "$POSTGRES_USER" \
+    --dbname "$POSTGRES_DB" \
+    --no-password \
+    --command "SELECT 1;" \
+    >/dev/null 2>&1; then
+    echo "PostgreSQL started, but its configured credentials were rejected." >&2
+    echo "Restore the password originally used to initialize local-data/postgres." >&2
+    exit 1
+fi
+
+echo "PostgreSQL is ready."
+
 echo
 echo "==> Creating the unified Kubernetes namespace and credentials"
 kubectl apply -f "$ROOT_DIR/kubernetes/namespace.yaml"
@@ -160,43 +213,17 @@ echo
 echo "==> Applying the unified application configuration"
 kubectl apply -k "$ROOT_DIR/kubernetes"
 
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    postgres_node_path="/run/desktop/mnt/host${POSTGRES_DATA_DIR}"
-else
-    postgres_node_path="$POSTGRES_DATA_DIR"
-fi
-
-escaped_postgres_node_path="$(
-    printf '%s' "$postgres_node_path" \
-        | sed 's/[&|]/\\&/g'
-)"
-sed \
-    "s|__POSTGRES_HOST_PATH__|$escaped_postgres_node_path|" \
-    "$POSTGRES_TEMPLATE" \
-    >"$POSTGRES_MANIFEST"
-kubectl apply -f "$POSTGRES_MANIFEST"
+kubectl delete \
+    statefulset/postgres \
+    service/postgres \
+    --namespace "$NAMESPACE" \
+    --ignore-not-found \
+    --wait=true
 
 kubectl patch cronjob weather-reconciler \
     --namespace "$NAMESPACE" \
     --type merge \
     --patch '{"spec":{"suspend":true}}'
-
-echo
-echo "==> Starting PostgreSQL in Kubernetes"
-kubectl scale statefulset/postgres \
-    --namespace "$NAMESPACE" \
-    --replicas=1
-
-if ! kubectl rollout status statefulset/postgres \
-    --namespace "$NAMESPACE" \
-    --timeout=300s; then
-    kubectl logs postgres-0 \
-        --namespace "$NAMESPACE" \
-        --tail=100 \
-        >&2 \
-        || true
-    exit 1
-fi
 
 echo
 echo "==> Starting Kafka"
@@ -298,10 +325,7 @@ if [[ "$backfill_drained" != true ]]; then
 fi
 
 database_rows="$(
-    kubectl exec \
-        --namespace "$NAMESPACE" \
-        postgres-0 \
-        -- \
+    docker exec "$POSTGRES_CONTAINER" \
         psql \
         --username "$POSTGRES_USER" \
         --dbname "$POSTGRES_DB" \

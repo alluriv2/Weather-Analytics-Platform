@@ -22,7 +22,7 @@ POSTGRES_CONFIG = {
     "port": int(
         os.getenv(
             "POSTGRES_PORT",
-            "5432",
+            "5433",
         )
     ),
     "dbname": os.getenv(
