@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: weather-dev
+  name: weather-python
   labels:
     app.kubernetes.io/part-of: weather-platform
     environment: development

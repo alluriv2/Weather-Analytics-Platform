@@ -3,9 +3,10 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMESPACE="weather-prod-python"
-POSTGRES_CONTAINER="weather-postgres-local"
-RUN_DIRECTORY="$ROOT_DIR/local-data/run-prod"
+NAMESPACE="weather-python"
+RUN_DIRECTORY="$ROOT_DIR/local-data/run"
+KAFKA_GROUP="weather-postgres-consumer-python"
+KAFKA_TOPIC="raw_weather_events_python"
 
 stop_port_forwards() {
     if [[ ! -d "$RUN_DIRECTORY" ]]; then
@@ -13,6 +14,7 @@ stop_port_forwards() {
     fi
 
     local pid_file
+
     for pid_file in "$RUN_DIRECTORY"/*.pid; do
         [[ -e "$pid_file" ]] || continue
 
@@ -34,50 +36,138 @@ stop_port_forwards() {
     done
 }
 
-echo "==> Closing production local service ports"
+wait_for_pods_to_stop() {
+    local selector="$1"
+
+    kubectl wait \
+        --namespace "$NAMESPACE" \
+        --for=delete \
+        pod \
+        --selector "$selector" \
+        --timeout=120s \
+        >/dev/null 2>&1 \
+        || true
+}
+
+consumer_lag() {
+    kubectl exec \
+        --namespace "$NAMESPACE" \
+        kafka-0 \
+        -- \
+        /opt/kafka/bin/kafka-consumer-groups.sh \
+        --bootstrap-server localhost:9092 \
+        --describe \
+        --group "$KAFKA_GROUP" \
+        2>/dev/null \
+        | awk -v topic="$KAFKA_TOPIC" \
+            '$2 == topic && $6 ~ /^[0-9]+$/ {lag += $6; found = 1} END {if (found) print lag; else print -1}'
+}
+
+echo "==> Closing local service ports"
 stop_port_forwards
 
 if kubectl cluster-info >/dev/null 2>&1 \
     && kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
     echo
-    echo "==> Suspending production reconciliation"
-    kubectl patch cronjob weather-reconciler \
-        --namespace "$NAMESPACE" \
-        --type merge \
-        --patch '{"spec":{"suspend":true}}'
+    echo "==> Suspending reconciliation"
+
+    if kubectl get cronjob weather-reconciler \
+        --namespace "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl patch cronjob weather-reconciler \
+            --namespace "$NAMESPACE" \
+            --type merge \
+            --patch '{"spec":{"suspend":true}}'
+    fi
 
     echo
-    echo "==> Stopping production application workloads"
-    kubectl scale deployment --all \
-        --namespace "$NAMESPACE" \
-        --replicas=0
+    echo "==> Stopping the producer"
+
+    if kubectl get deployment weather-producer \
+        --namespace "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl scale deployment/weather-producer \
+            --namespace "$NAMESPACE" \
+            --replicas=0
+        wait_for_pods_to_stop "app.kubernetes.io/name=weather-producer"
+    fi
+
+    if kubectl get pod kafka-0 \
+        --namespace "$NAMESPACE" >/dev/null 2>&1 \
+        && kubectl get deployment weather-consumer \
+            --namespace "$NAMESPACE" >/dev/null 2>&1; then
+        echo
+        echo "==> Allowing the consumer to drain pending Kafka events"
+
+        for _ in {1..60}; do
+            current_lag="$(consumer_lag || echo -1)"
+
+            if [[ "$current_lag" == "0" ]]; then
+                echo "Kafka consumer lag is zero."
+                break
+            fi
+
+            sleep 2
+        done
+    fi
 
     echo
-    echo "==> Stopping production Kafka"
-    kubectl scale statefulset --all \
+    echo "==> Stopping application workloads"
+
+    if kubectl get deployments \
         --namespace "$NAMESPACE" \
-        --replicas=0
+        --output name 2>/dev/null \
+        | grep -q .; then
+        kubectl scale deployment --all \
+            --namespace "$NAMESPACE" \
+            --replicas=0
+    fi
 
     kubectl delete jobs --all \
         --namespace "$NAMESPACE" \
         --ignore-not-found \
         --wait=true
-else
-    echo "Kubernetes is unavailable; skipping Kubernetes shutdown."
-fi
 
-echo
-echo "==> Stopping production PostgreSQL"
-if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
-    postgres_running="$(
-        docker inspect "$POSTGRES_CONTAINER" \
-            --format '{{.State.Running}}'
-    )"
+    echo
+    echo "==> Stopping Kafka"
 
-    if [[ "$postgres_running" == "true" ]]; then
-        docker stop "$POSTGRES_CONTAINER" >/dev/null
+    if kubectl get statefulset kafka \
+        --namespace "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl scale statefulset/kafka \
+            --namespace "$NAMESPACE" \
+            --replicas=0
+        wait_for_pods_to_stop "app.kubernetes.io/name=kafka"
     fi
+
+    echo
+    echo "==> Stopping PostgreSQL"
+
+    if kubectl get statefulset postgres \
+        --namespace "$NAMESPACE" >/dev/null 2>&1; then
+        kubectl scale statefulset/postgres \
+            --namespace "$NAMESPACE" \
+            --replicas=0
+        wait_for_pods_to_stop "app.kubernetes.io/name=postgres"
+    fi
+else
+    echo "Kubernetes is unavailable; no Kubernetes workloads can be changed."
 fi
 
+for legacy_postgres_container in \
+    weather-postgres-local \
+    weather-postgres-python-dev; do
+    if docker inspect "$legacy_postgres_container" >/dev/null 2>&1; then
+        legacy_postgres_running="$(
+            docker inspect "$legacy_postgres_container" \
+                --format '{{.State.Running}}'
+        )"
+
+        if [[ "$legacy_postgres_running" == "true" ]]; then
+            echo
+            echo "==> Stopping legacy container $legacy_postgres_container"
+            docker stop "$legacy_postgres_container" >/dev/null
+        fi
+    fi
+done
+
 echo
-echo "Production stopped. PostgreSQL files and Kafka PVCs were preserved."
+echo "Weather Platform stopped."
+echo "PostgreSQL files, Kafka logs, database watermarks, configuration, and images were preserved."

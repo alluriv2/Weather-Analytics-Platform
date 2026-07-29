@@ -5,14 +5,14 @@ metadata:
   labels:
     app.kubernetes.io/part-of: weather-platform
 data:
-  POSTGRES_HOST: host.docker.internal
-  POSTGRES_PORT: "5433"
-  POSTGRES_DB: weather_db_dev
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: weather_db
 
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-  KAFKA_TOPIC: raw_weather_events_python_prod
-  KAFKA_CLIENT_ID: weather-producer-dev
-  KAFKA_CONSUMER_GROUP: weather-postgres-consumer-dev
+  KAFKA_TOPIC: raw_weather_events_python
+  KAFKA_CLIENT_ID: weather-producer-python
+  KAFKA_CONSUMER_GROUP: weather-postgres-consumer-python
   KAFKA_PARTITION: "0"
   KAFKA_START_OFFSET: "0"
 

@@ -7,10 +7,9 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-REST-009688)
 ![Plotly Dash](https://img.shields.io/badge/Plotly-Dash-purple)
 
-A real-time weather ingestion and analytics platform with isolated development
-and production environments. Kubernetes runs Kafka and the application
-services, while PostgreSQL remains outside Kubernetes so weather history
-survives cluster shutdown and recreation.
+A containerized weather ingestion and analytics platform. Kubernetes manages
+the complete runtime, while repository-local storage retains PostgreSQL and
+Kafka data independently of pods and cluster recreation.
 
 ## Architecture
 
@@ -31,16 +30,17 @@ Remote weather stations
                                              Dashboard
 ```
 
-Each environment has its own Kafka broker, topic, consumer group, PostgreSQL
-database, Kubernetes resources, and local service addresses.
+The runtime uses one Kubernetes namespace and one Kafka topic:
 
-| Environment | Namespace | Kafka topic |
-| --- | --- | --- |
-| Development | `weather-dev-python` | `raw_weather_events_python_dev` |
-| Production | `weather-prod-python` | `raw_weather_events_python_prod` |
+| Setting | Value |
+| --- | --- |
+| Namespace | `weather-python` |
+| Kafka topic | `raw_weather_events_python` |
+| Consumer group | `weather-postgres-consumer-python` |
 
-Development and production do not share messages, offsets, databases, secrets,
-or persistent volumes.
+All custom Python components share the `weather-platform:0.5.3` image. Each
+component runs that image with a different command. PostgreSQL, Kafka, and
+Kafka UI use their own specialized images.
 
 ## Requirements
 
@@ -57,27 +57,41 @@ kubectl config use-context docker-desktop
 kubectl cluster-info
 ```
 
-## Start production
+## Start
+
+From the repository root:
 
 ```bash
 ./start
 ```
 
-The command performs the complete production startup in dependency order:
+Every normal start rebuilds the Python image from the currently checked-out
+source. It then:
 
-1. Builds the current application image.
-2. Starts the standalone PostgreSQL service and verifies its credentials.
-3. Creates or updates the production Kubernetes resources.
-4. Starts Kafka and runs the initial or incremental data reconciliation.
+1. Creates repository-local storage when needed.
+2. Deploys PostgreSQL and waits for database readiness.
+3. Deploys Kafka and waits for broker readiness.
+4. Performs a full backfill for a new database or incremental reconciliation
+   from the retained timestamps.
 5. Starts the producer and consumer.
 6. Starts the aggregator, API, dashboard, and Kafka UI.
-7. Opens the local service addresses.
+7. Enables scheduled reconciliation and opens the local service ports.
 
-On the first run, the startup creates the production database and performs a
-full historical backfill. Later runs retain that database and reconcile only
-records missing since the last stored timestamp.
+First-time setup asks for a PostgreSQL password and saves it in the untracked
+`.env` file. Later starts reuse the same credentials and database.
 
-Production service addresses:
+When upgrading from the former split-environment version, startup stops the
+legacy standalone Python PostgreSQL containers and mounts the retained
+`local-data/postgres` files into Kubernetes. It also renames the former
+`weather_db_dev` database to `weather_db` without removing its records.
+
+Start without opening local ports:
+
+```bash
+./start --no-port-forward
+```
+
+## Service addresses
 
 | Service | Address |
 | --- | --- |
@@ -87,118 +101,111 @@ Production service addresses:
 | Ingestion status | <http://127.0.0.1:18000/ingestion-status> |
 | Kafka UI | <http://127.0.0.1:18080> |
 
-Check production at any time without changing it:
+## Report
 
 ```bash
 ./report
 ```
 
-Stop production:
+The report is read-only. It shows the Git version, storage usage, Kubernetes
+workloads, latest database timestamp, database-backed ingestion watermarks,
+Kafka consumer lag, and reconciliation state.
+
+## Stop
 
 ```bash
 ./stop
 ```
 
-Stopping closes the local service addresses, stops the Kubernetes workloads,
-and stops PostgreSQL. It retains the production database, Kafka storage,
-configuration, and container images so that the next `./start` resumes safely.
+Shutdown happens in dependency order:
 
-## Start development
+1. Close local port forwards.
+2. Suspend reconciliation.
+3. Stop the producer.
+4. Allow the consumer to drain pending Kafka messages.
+5. Stop the consumer and application services.
+6. Stop Kafka.
+7. Stop PostgreSQL last.
 
-```bash
-./scripts/bootstrap-local.sh --environment dev
+Shutdown preserves database files, Kafka logs and offsets, watermarks,
+credentials, images, and Kubernetes storage definitions.
+
+## Persistent storage
+
+Runtime state is kept outside disposable pods:
+
+```text
+local-data/
+├── postgres/    # Database records and ingestion watermarks
+├── kafka/       # Topics, messages, broker metadata, and offsets
+└── run/         # Local port-forward logs and process IDs
 ```
 
-Development service addresses:
+`local-data/` and `.env` are excluded from Git. A cluster or pod can disappear
+without deleting these files. Only deleting the corresponding local directory
+removes its retained state.
 
-| Service | Address |
-| --- | --- |
-| Dashboard | <http://127.0.0.1:28050> |
-| API | <http://127.0.0.1:28000> |
-| API documentation | <http://127.0.0.1:28000/docs> |
-| Ingestion status | <http://127.0.0.1:28000/ingestion-status> |
-| Kafka UI | <http://127.0.0.1:28080> |
+PostgreSQL is the long-term source of truth. Kafka is a retained event stream,
+but startup reconciliation can reconstruct missing intervals from PostgreSQL's
+latest timestamp and the upstream weather source.
 
-Development has its own database and Kubernetes namespace and remains available
-through the detailed bootstrap command.
+## Database watermarks
 
-## Bootstrap options
+The `ingestion_state` table records, per station:
 
-Reuse the existing application image:
+- Latest timestamp observed at the source
+- Latest timestamp acknowledged by the producer
+- Latest timestamp committed by the consumer
+- Latest timestamp stored in the database
+- Kafka partition and offset
+- Last reconciliation time and health status
 
-```bash
-./start --skip-build
-```
+The consumer updates weather data and its watermark in the same PostgreSQL
+transaction. Kafka consumer offsets remain in Kafka because the broker uses
+them for delivery coordination.
 
-Deploy without opening local service addresses:
+## Git workflow
 
-```bash
-./start --no-port-forward
-```
-
-The long-form bootstrap script remains available for development and advanced
-operations.
-
-## Verify the environments
-
-Production:
+One repository folder is sufficient. Git branches separate stable and
+in-progress code:
 
 ```bash
-kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
-  --namespace weather-prod-python
+git switch main
+git pull
+git switch -c feature/my-change
+
+# Edit files, then rebuild and test the checked-out source.
+./stop
+./start
+./report
+
+git add .
+git commit -m "Describe the change"
+git switch main
+git merge feature/my-change
+git push origin main
 ```
-
-Development:
-
-```bash
-kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
-  --namespace weather-dev-python
-```
-
-Check the independent databases:
-
-```bash
-docker ps \
-  --filter name=weather-postgres-local \
-  --filter name=weather-postgres-python-dev
-```
-
-Healthy continuous workloads show `Running`; completed backfill and
-reconciliation jobs show `Completed`.
-
-## Recovery behavior
-
-Stopping Kubernetes interrupts Kafka and the application services but does not
-erase either PostgreSQL database. On restart, run the bootstrap for the desired
-environment. It recreates missing Kubernetes resources, compares timestamps,
-repairs the missed interval, and resumes live processing.
-
-Deleting one namespace affects only that environment:
-
-```bash
-kubectl delete namespace weather-dev-python
-```
-
-The production namespace and both external PostgreSQL databases remain
-untouched.
 
 ## Repository layout
 
 ```text
 .
 ├── dashboard/                   # Plotly Dash application
-├── deploy/
-│   ├── dev/                     # Development namespace overrides
-│   └── prod/                    # Production namespace overrides
-├── kubernetes/                  # Namespace-neutral Kubernetes resources
-├── local/
-│   ├── postgres-compose.yaml
-│   └── postgres-compose.dev.yaml
+├── kubernetes/                  # Unified Kubernetes resources
+│   ├── postgres/
+│   ├── kafka/
+│   ├── producer/
+│   ├── consumer/
+│   ├── aggregator/
+│   ├── api/
+│   ├── dashboard/
+│   ├── kafka-ui/
+│   └── reconciler/
 ├── scripts/
 │   └── bootstrap-local.sh
-├── start                       # Start all production components in order
-├── stop                        # Stop production while retaining its data
-├── report                      # Read-only production health summary
+├── start
+├── stop
+├── report
 ├── previous-version/
 ├── Dockerfile
 ├── ingestion_state.py

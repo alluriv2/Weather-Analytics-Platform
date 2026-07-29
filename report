@@ -3,63 +3,62 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NAMESPACE="weather-prod-python"
-POSTGRES_CONTAINER="weather-postgres-local"
-POSTGRES_DB="weather_db_dev"
-KAFKA_GROUP="weather-postgres-consumer-python-prod"
-KAFKA_TOPIC="raw_weather_events_python_prod"
+NAMESPACE="weather-python"
+POSTGRES_DB="weather_db"
+POSTGRES_USER="weather_user"
+KAFKA_GROUP="weather-postgres-consumer-python"
+KAFKA_TOPIC="raw_weather_events_python"
 
 print_value() {
-    printf '%-22s %s\n' "$1" "$2"
+    printf '%-24s %s\n' "$1" "$2"
 }
 
-echo "Weather Platform production report"
+directory_size() {
+    local directory="$1"
+
+    if [[ -d "$directory" ]]; then
+        du -sh "$directory" 2>/dev/null | awk '{print $1}'
+    else
+        echo "not created"
+    fi
+}
+
+echo "Weather Platform report"
 echo
 
+git_branch="$(git -C "$ROOT_DIR" branch --show-current 2>/dev/null || echo unavailable)"
+git_commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unavailable)"
+print_value "Git branch:" "$git_branch"
+print_value "Git commit:" "$git_commit"
+print_value "PostgreSQL storage:" "$(directory_size "$ROOT_DIR/local-data/postgres")"
+print_value "Kafka storage:" "$(directory_size "$ROOT_DIR/local-data/kafka")"
+
 docker_status="unavailable"
+
 if docker info >/dev/null 2>&1; then
     docker_status="running"
 fi
+
 print_value "Docker:" "$docker_status"
 
-postgres_status="not created"
-if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
-    postgres_status="$(
-        docker inspect "$POSTGRES_CONTAINER" \
-            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
-    )"
-fi
-print_value "PostgreSQL:" "$postgres_status"
-
-latest_database_record="unavailable"
-if [[ "$postgres_status" == "healthy" ]]; then
-    latest_database_record="$(
-        docker exec "$POSTGRES_CONTAINER" \
-            psql \
-            --username weather_user \
-            --dbname "$POSTGRES_DB" \
-            --tuples-only \
-            --no-align \
-            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
-            2>/dev/null \
-            || echo "query failed"
-    )"
-fi
-print_value "Latest DB record:" "$latest_database_record"
-
 kubernetes_status="unavailable"
+
 if kubectl cluster-info >/dev/null 2>&1; then
     kubernetes_status="running"
 fi
+
 print_value "Kubernetes:" "$kubernetes_status"
 
 if [[ "$kubernetes_status" != "running" ]] \
     || ! kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
     print_value "Namespace:" "unavailable"
+    echo
+    echo "This command made no changes."
     exit 0
 fi
 
 print_value "Namespace:" "$NAMESPACE"
+print_value "Kafka topic:" "$KAFKA_TOPIC"
 
 echo
 printf '%-24s %-10s %-10s\n' "WORKLOAD" "DESIRED" "READY"
@@ -75,13 +74,74 @@ done < <(
         --output jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\n"}{end}'
 )
 
-kafka_desired="$(
-    kubectl get statefulset kafka \
+while IFS=$'\t' read -r workload desired ready; do
+    printf '%-24s %-10s %-10s\n' \
+        "$workload" \
+        "${desired:-0}" \
+        "${ready:-0}"
+done < <(
+    kubectl get statefulsets \
         --namespace "$NAMESPACE" \
-        --output jsonpath='{.spec.replicas}' \
+        --output jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\n"}{end}'
+)
+
+postgres_ready="$(
+    kubectl get statefulset postgres \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.status.readyReplicas}' \
         2>/dev/null \
         || echo "0"
 )"
+
+if [[ "${postgres_ready:-0}" -ge 1 ]]; then
+    latest_database_record="$(
+        kubectl exec \
+            --namespace "$NAMESPACE" \
+            postgres-0 \
+            -- \
+            psql \
+            --username "$POSTGRES_USER" \
+            --dbname "$POSTGRES_DB" \
+            --tuples-only \
+            --no-align \
+            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
+            2>/dev/null \
+            || echo "query failed"
+    )"
+else
+    latest_database_record="PostgreSQL stopped"
+fi
+
+echo
+print_value "Latest DB record:" "$latest_database_record"
+
+if [[ "${postgres_ready:-0}" -ge 1 ]]; then
+    echo
+    echo "Database watermarks"
+
+    kubectl exec \
+        --namespace "$NAMESPACE" \
+        postgres-0 \
+        -- \
+        psql \
+        --username "$POSTGRES_USER" \
+        --dbname "$POSTGRES_DB" \
+        --pset pager=off \
+        --command "
+            SELECT
+                station,
+                source_latest_ts,
+                producer_latest_ts,
+                consumer_latest_ts,
+                database_latest_ts,
+                status
+            FROM ingestion_state
+            ORDER BY station;
+        " \
+        2>/dev/null \
+        || echo "Watermark table is not initialized yet."
+fi
+
 kafka_ready="$(
     kubectl get statefulset kafka \
         --namespace "$NAMESPACE" \
@@ -89,20 +149,6 @@ kafka_ready="$(
         2>/dev/null \
         || echo "0"
 )"
-printf '%-24s %-10s %-10s\n' \
-    "kafka" \
-    "${kafka_desired:-0}" \
-    "${kafka_ready:-0}"
-
-cron_suspended="$(
-    kubectl get cronjob weather-reconciler \
-        --namespace "$NAMESPACE" \
-        --output jsonpath='{.spec.suspend}' \
-        2>/dev/null \
-        || echo "unknown"
-)"
-echo
-print_value "Reconciler suspended:" "$cron_suspended"
 
 if [[ "${kafka_ready:-0}" -ge 1 ]]; then
     kafka_lag="$(
@@ -121,7 +167,33 @@ if [[ "${kafka_ready:-0}" -ge 1 ]]; then
 else
     kafka_lag="Kafka stopped"
 fi
+
+cron_suspended="$(
+    kubectl get cronjob weather-reconciler \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.spec.suspend}' \
+        2>/dev/null \
+        || echo "unknown"
+)"
+
+echo
 print_value "Kafka consumer lag:" "$kafka_lag"
+print_value "Reconciler suspended:" "$cron_suspended"
+
+dashboard_ready="$(
+    kubectl get deployment weather-dashboard \
+        --namespace "$NAMESPACE" \
+        --output jsonpath='{.status.readyReplicas}' \
+        2>/dev/null \
+        || echo "0"
+)"
+
+if [[ "${dashboard_ready:-0}" -ge 1 ]]; then
+    echo
+    echo "Dashboard: http://127.0.0.1:18050"
+    echo "API:       http://127.0.0.1:18000"
+    echo "Kafka UI:  http://127.0.0.1:18080"
+fi
 
 echo
 echo "This command made no changes."

@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: weather-platform
 spec:
   serviceName: kafka
-  replicas: 1
+  replicas: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: kafka
@@ -46,7 +46,7 @@ spec:
             - name: KAFKA_INTER_BROKER_LISTENER_NAME
               value: PLAINTEXT
             - name: KAFKA_CONTROLLER_QUORUM_VOTERS
-              value: 1@kafka-0.kafka.weather-dev.svc.cluster.local:9093
+              value: 1@kafka-0.kafka.weather-python.svc.cluster.local:9093
             - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
               value: "1"
             - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
@@ -98,15 +98,7 @@ spec:
           volumeMounts:
             - name: kafka-data
               mountPath: /tmp/kraft-combined-logs
-  volumeClaimTemplates:
-    - metadata:
-        name: kafka-data
-        labels:
-          app.kubernetes.io/name: kafka
-          app.kubernetes.io/part-of: weather-platform
-      spec:
-        accessModes:
-          - ReadWriteOnce
-        resources:
-          requests:
-            storage: 2Gi
+      volumes:
+        - name: kafka-data
+          persistentVolumeClaim:
+            claimName: kafka-data

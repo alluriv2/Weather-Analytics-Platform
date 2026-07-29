@@ -25,7 +25,7 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: KAFKA_CLUSTERS_0_NAME
-              value: weather-dev
+              value: weather-python
             - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
               value: kafka:9092
             - name: KAFKA_CLUSTERS_0_READONLY
