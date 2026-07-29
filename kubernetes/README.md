@@ -7,8 +7,8 @@ The manifests in `kubernetes/` deploy the complete Weather Platform to the
 
 | Component | Kubernetes resource | Persistence |
 | --- | --- | --- |
-| PostgreSQL | StatefulSet | `local-data/postgres` |
-| Kafka | StatefulSet | `local-data/kafka` |
+| PostgreSQL | Standalone Docker container | `local-data/postgres` |
+| Kafka | StatefulSet | Kubernetes PVC |
 | Producer | Deployment | Watermark in PostgreSQL |
 | Consumer | Deployment | Offset in Kafka and watermark in PostgreSQL |
 | Aggregator | Deployment | PostgreSQL |
@@ -17,9 +17,10 @@ The manifests in `kubernetes/` deploy the complete Weather Platform to the
 | Kafka UI | Deployment and Service | Stateless |
 | Reconciler | CronJob and startup Job | Watermarks in PostgreSQL |
 
-The lifecycle script creates retained PersistentVolumes whose host paths point
-to the current clone's `local-data` directories. The paths are generated at
-runtime so the repository does not contain a user-specific absolute path.
+Docker Desktop Kubernetes runs inside a `kind` node container and cannot
+directly mount arbitrary macOS repository folders. PostgreSQL therefore runs
+through Docker Compose and mounts `local-data/postgres` directly. Kubernetes
+services reach it through `host.docker.internal:5433`.
 
 ## Render and validate
 
@@ -27,9 +28,6 @@ runtime so the repository does not contain a user-specific absolute path.
 kubectl kustomize kubernetes
 kubectl apply --dry-run=client -k kubernetes
 ```
-
-The persistent volumes are intentionally created by `./start`, not by the
-static Kustomize bundle, because their host paths depend on the clone location.
 
 ## Lifecycle
 
@@ -39,8 +37,8 @@ static Kustomize bundle, because their host paths depend on the clone location.
 ./stop
 ```
 
-`./start` always rebuilds `weather-platform:0.5.3`, creates or reconnects the
-retained volumes, applies the manifests with application workloads stopped,
+`./start` always rebuilds `weather-platform:0.5.3`, starts the retained
+PostgreSQL container, applies the manifests with application workloads stopped,
 then starts components in this order:
 
 ```text
@@ -52,9 +50,9 @@ PostgreSQL
 → scheduled reconciliation
 ```
 
-`./stop` reverses the dependency order and scales the two StatefulSets to zero.
-It does not delete the namespace, PersistentVolumes, PersistentVolumeClaims,
-Secrets, local data folders, or images.
+`./stop` reverses the dependency order, scales Kafka to zero, and stops
+PostgreSQL last. It does not delete the namespace, Kafka PVC, Secret,
+PostgreSQL data folder, or images.
 
 ## Verify
 
@@ -62,9 +60,7 @@ Secrets, local data folders, or images.
 kubectl get deployments,statefulsets,pods,cronjobs,jobs,pvc \
   --namespace weather-python
 
-kubectl get persistentvolumes \
-  weather-python-postgres-data \
-  weather-python-kafka-data
+docker ps --filter name=weather-postgres-local
 ```
 
 Kafka consumer lag:
@@ -80,7 +76,7 @@ kubectl exec --namespace weather-python kafka-0 -- \
 Database watermarks:
 
 ```bash
-kubectl exec --namespace weather-python postgres-0 -- \
+docker exec weather-postgres-local \
   psql --username weather_user --dbname weather_db \
   --command "SELECT * FROM ingestion_state ORDER BY station;"
 ```
@@ -90,7 +86,7 @@ kubectl exec --namespace weather-python postgres-0 -- \
 Normal restart:
 
 ```text
-Retained PostgreSQL and Kafka storage
+Retained PostgreSQL and Kafka PVC
 → reconcile timestamps
 → resume live ingestion
 ```
@@ -112,6 +108,6 @@ Initialize a new database
 → start live ingestion
 ```
 
-If a retained PersistentVolume is in `Released` state after namespace
-recreation, `./start` clears its old claim reference before recreating the
-claim. The underlying host data is not removed.
+If Kubernetes is completely recreated, Kafka messages and offsets may be lost.
+The retained PostgreSQL watermarks let startup reconciliation repair the
+missing interval before live ingestion resumes.

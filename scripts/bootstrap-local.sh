@@ -7,10 +7,11 @@ IMAGE_TAG="weather-platform:0.5.3"
 NAMESPACE="weather-python"
 ENV_FILE="$ROOT_DIR/.env"
 POSTGRES_DATA_DIR="$ROOT_DIR/local-data/postgres"
-KAFKA_DATA_DIR="$ROOT_DIR/local-data/kafka"
 RUN_DIRECTORY="$ROOT_DIR/local-data/run"
-POSTGRES_PV="weather-python-postgres-data"
-KAFKA_PV="weather-python-kafka-data"
+POSTGRES_COMPOSE_FILE="$ROOT_DIR/local/postgres-compose.yaml"
+POSTGRES_COMPOSE_PROJECT="weather-python"
+POSTGRES_CONTAINER="weather-postgres-local"
+POSTGRES_PORT="5433"
 POSTGRES_DB="weather_db"
 POSTGRES_USER="weather_user"
 KAFKA_TOPIC="raw_weather_events_python"
@@ -113,156 +114,61 @@ fi
 
 mkdir -p \
     "$POSTGRES_DATA_DIR" \
-    "$KAFKA_DATA_DIR" \
     "$RUN_DIRECTORY"
 
 echo
 echo "==> Building the application image from the current source"
 docker build -t "$IMAGE_TAG" .
 
-for legacy_postgres_container in \
-    weather-postgres-local \
-    weather-postgres-python-dev; do
-    if docker inspect "$legacy_postgres_container" >/dev/null 2>&1; then
-        legacy_postgres_running="$(
-            docker inspect "$legacy_postgres_container" \
-                --format '{{.State.Running}}'
-        )"
+if docker inspect weather-postgres-python-dev >/dev/null 2>&1; then
+    dev_postgres_running="$(
+        docker inspect weather-postgres-python-dev \
+            --format '{{.State.Running}}'
+    )"
 
-        if [[ "$legacy_postgres_running" == "true" ]]; then
-            echo
-            echo "==> Stopping legacy container $legacy_postgres_container"
-            docker stop "$legacy_postgres_container" >/dev/null
-        fi
+    if [[ "$dev_postgres_running" == "true" ]]; then
+        echo
+        echo "==> Stopping the obsolete development PostgreSQL container"
+        docker stop weather-postgres-python-dev >/dev/null
     fi
-done
+fi
+
+export WEATHER_DB_PASSWORD
 
 echo
-echo "==> Creating the unified Kubernetes namespace and credentials"
-kubectl apply -f "$ROOT_DIR/kubernetes/namespace.yaml"
+echo "==> Starting cluster-independent PostgreSQL"
+docker compose \
+    --project-name "$POSTGRES_COMPOSE_PROJECT" \
+    --file "$POSTGRES_COMPOSE_FILE" \
+    up -d
 
-kubectl create secret generic postgres-credentials \
-    --namespace "$NAMESPACE" \
-    --from-literal=POSTGRES_USER="$POSTGRES_USER" \
-    --from-literal=POSTGRES_PASSWORD="$WEATHER_DB_PASSWORD" \
-    --dry-run=client \
-    --output yaml \
-    | kubectl apply -f -
+postgres_health=""
 
-release_retained_volume() {
-    local volume_name="$1"
-    local phase
-
-    phase="$(
-        kubectl get persistentvolume "$volume_name" \
-            --output jsonpath='{.status.phase}' \
+for _ in {1..60}; do
+    postgres_health="$(
+        docker inspect "$POSTGRES_CONTAINER" \
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
             2>/dev/null \
             || true
     )"
 
-    if [[ "$phase" == "Released" ]]; then
-        kubectl patch persistentvolume "$volume_name" \
-            --type json \
-            --patch '[{"op":"remove","path":"/spec/claimRef"}]'
+    if [[ "$postgres_health" == "healthy" ]]; then
+        break
     fi
-}
 
-release_retained_volume "$POSTGRES_PV"
-release_retained_volume "$KAFKA_PV"
+    sleep 2
+done
 
-echo
-echo "==> Connecting Kubernetes storage to repository-local data"
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: $POSTGRES_PV
-  labels:
-    app.kubernetes.io/name: postgres
-    app.kubernetes.io/part-of: weather-platform
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: weather-local
-  hostPath:
-    path: "$POSTGRES_DATA_DIR"
-    type: Directory
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-data
-  namespace: $NAMESPACE
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: weather-local
-  volumeName: $POSTGRES_PV
-  resources:
-    requests:
-      storage: 20Gi
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: $KAFKA_PV
-  labels:
-    app.kubernetes.io/name: kafka
-    app.kubernetes.io/part-of: weather-platform
-spec:
-  capacity:
-    storage: 20Gi
-  accessModes:
-    - ReadWriteOnce
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: weather-local
-  hostPath:
-    path: "$KAFKA_DATA_DIR"
-    type: Directory
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: kafka-data
-  namespace: $NAMESPACE
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: weather-local
-  volumeName: $KAFKA_PV
-  resources:
-    requests:
-      storage: 20Gi
-EOF
-
-echo
-echo "==> Applying the unified application configuration"
-kubectl apply -k "$ROOT_DIR/kubernetes"
-
-kubectl patch cronjob weather-reconciler \
-    --namespace "$NAMESPACE" \
-    --type merge \
-    --patch '{"spec":{"suspend":true}}'
-
-echo
-echo "==> Starting PostgreSQL"
-kubectl scale statefulset/postgres \
-    --namespace "$NAMESPACE" \
-    --replicas=1
-
-kubectl rollout status statefulset/postgres \
-    --namespace "$NAMESPACE" \
-    --timeout=300s
+if [[ "$postgres_health" != "healthy" ]]; then
+    echo "PostgreSQL did not become healthy." >&2
+    docker logs "$POSTGRES_CONTAINER" --tail 100 >&2 || true
+    exit 1
+fi
 
 database_exists="$(
-    kubectl exec \
-        --namespace "$NAMESPACE" \
-        postgres-0 \
-        -- \
-        env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+    docker exec \
+        --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+        "$POSTGRES_CONTAINER" \
         psql \
         --host 127.0.0.1 \
         --username "$POSTGRES_USER" \
@@ -275,11 +181,9 @@ database_exists="$(
 )"
 
 legacy_database_exists="$(
-    kubectl exec \
-        --namespace "$NAMESPACE" \
-        postgres-0 \
-        -- \
-        env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+    docker exec \
+        --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+        "$POSTGRES_CONTAINER" \
         psql \
         --host 127.0.0.1 \
         --username "$POSTGRES_USER" \
@@ -293,11 +197,9 @@ legacy_database_exists="$(
 
 if [[ "$database_exists" != "1" && "$legacy_database_exists" == "1" ]]; then
     echo "==> Renaming the retained database from weather_db_dev to weather_db"
-    kubectl exec \
-        --namespace "$NAMESPACE" \
-        postgres-0 \
-        -- \
-        env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+    docker exec \
+        --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+        "$POSTGRES_CONTAINER" \
         psql \
         --host 127.0.0.1 \
         --username "$POSTGRES_USER" \
@@ -305,13 +207,13 @@ if [[ "$database_exists" != "1" && "$legacy_database_exists" == "1" ]]; then
         --command "ALTER DATABASE weather_db_dev RENAME TO weather_db;"
 fi
 
-if ! kubectl exec \
-    --namespace "$NAMESPACE" \
-    postgres-0 \
-    -- \
-    env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+if ! docker run \
+    --rm \
+    --env "PGPASSWORD=$WEATHER_DB_PASSWORD" \
+    postgres:17 \
     psql \
-    --host 127.0.0.1 \
+    --host host.docker.internal \
+    --port "$POSTGRES_PORT" \
     --username "$POSTGRES_USER" \
     --dbname "$POSTGRES_DB" \
     --no-password \
@@ -323,6 +225,27 @@ if ! kubectl exec \
 fi
 
 echo "PostgreSQL is ready."
+
+echo
+echo "==> Creating the unified Kubernetes namespace and credentials"
+kubectl apply -f "$ROOT_DIR/kubernetes/namespace.yaml"
+
+kubectl create secret generic postgres-credentials \
+    --namespace "$NAMESPACE" \
+    --from-literal=POSTGRES_USER="$POSTGRES_USER" \
+    --from-literal=POSTGRES_PASSWORD="$WEATHER_DB_PASSWORD" \
+    --dry-run=client \
+    --output yaml \
+    | kubectl apply -f -
+
+echo
+echo "==> Applying the unified application configuration"
+kubectl apply -k "$ROOT_DIR/kubernetes"
+
+kubectl patch cronjob weather-reconciler \
+    --namespace "$NAMESPACE" \
+    --type merge \
+    --patch '{"spec":{"suspend":true}}'
 
 echo
 echo "==> Starting Kafka"
@@ -434,10 +357,12 @@ start_port_forward() {
         --namespace "$NAMESPACE" \
         "service/$service_name" \
         "$local_port:$service_port" \
+        </dev/null \
         >"$log_file" 2>&1 &
 
     local port_forward_pid=$!
     echo "$port_forward_pid" >"$pid_file"
+    disown "$port_forward_pid" 2>/dev/null || true
 
     for _ in {1..30}; do
         if grep -q "Forwarding from" "$log_file" 2>/dev/null; then

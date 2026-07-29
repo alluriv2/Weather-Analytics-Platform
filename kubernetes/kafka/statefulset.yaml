@@ -98,7 +98,15 @@ spec:
           volumeMounts:
             - name: kafka-data
               mountPath: /tmp/kraft-combined-logs
-      volumes:
-        - name: kafka-data
-          persistentVolumeClaim:
-            claimName: kafka-data
+  volumeClaimTemplates:
+    - metadata:
+        name: kafka-data
+        labels:
+          app.kubernetes.io/name: kafka
+          app.kubernetes.io/part-of: weather-platform
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 2Gi

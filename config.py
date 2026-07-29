@@ -17,12 +17,12 @@ load_dotenv()
 POSTGRES_CONFIG = {
     "host": os.getenv(
         "POSTGRES_HOST",
-        "postgres",
+        "localhost",
     ),
     "port": int(
         os.getenv(
             "POSTGRES_PORT",
-            "5432",
+            "5433",
         )
     ),
     "dbname": os.getenv(

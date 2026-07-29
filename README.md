@@ -8,8 +8,8 @@
 ![Plotly Dash](https://img.shields.io/badge/Plotly-Dash-purple)
 
 A containerized weather ingestion and analytics platform. Kubernetes manages
-the complete runtime, while repository-local storage retains PostgreSQL and
-Kafka data independently of pods and cluster recreation.
+Kafka and the Python services. Docker runs PostgreSQL with repository-local
+storage so the source-of-truth database survives Kubernetes cluster recreation.
 
 ## Architecture
 
@@ -68,8 +68,8 @@ From the repository root:
 Every normal start rebuilds the Python image from the currently checked-out
 source. It then:
 
-1. Creates repository-local storage when needed.
-2. Deploys PostgreSQL and waits for database readiness.
+1. Creates repository-local database storage when needed.
+2. Starts PostgreSQL with Docker and waits for database readiness.
 3. Deploys Kafka and waits for broker readiness.
 4. Performs a full backfill for a new database or incremental reconciliation
    from the retained timestamps.
@@ -81,9 +81,9 @@ First-time setup asks for a PostgreSQL password and saves it in the untracked
 `.env` file. Later starts reuse the same credentials and database.
 
 When upgrading from the former split-environment version, startup stops the
-legacy standalone Python PostgreSQL containers and mounts the retained
-`local-data/postgres` files into Kubernetes. It also renames the former
-`weather_db_dev` database to `weather_db` without removing its records.
+obsolete development PostgreSQL container and reuses the retained
+`local-data/postgres` files. It also renames the former `weather_db_dev`
+database to `weather_db` without removing its records.
 
 Start without opening local ports:
 
@@ -127,27 +127,26 @@ Shutdown happens in dependency order:
 6. Stop Kafka.
 7. Stop PostgreSQL last.
 
-Shutdown preserves database files, Kafka logs and offsets, watermarks,
+Shutdown preserves database files, Kafka PVC data and offsets, watermarks,
 credentials, images, and Kubernetes storage definitions.
 
 ## Persistent storage
 
-Runtime state is kept outside disposable pods:
+The source-of-truth database is kept outside disposable pods:
 
 ```text
 local-data/
 ├── postgres/    # Database records and ingestion watermarks
-├── kafka/       # Topics, messages, broker metadata, and offsets
 └── run/         # Local port-forward logs and process IDs
 ```
 
-`local-data/` and `.env` are excluded from Git. A cluster or pod can disappear
-without deleting these files. Only deleting the corresponding local directory
-removes its retained state.
+`local-data/` and `.env` are excluded from Git. Kubernetes can disappear
+without deleting the PostgreSQL files. Only deleting `local-data/postgres`
+removes the retained database.
 
-PostgreSQL is the long-term source of truth. Kafka is a retained event stream,
-but startup reconciliation can reconstruct missing intervals from PostgreSQL's
-latest timestamp and the upstream weather source.
+Kafka uses a Kubernetes PersistentVolumeClaim for normal pod restarts.
+PostgreSQL remains the long-term source of truth, and startup reconciliation
+can reconstruct missing Kafka intervals after complete cluster recreation.
 
 ## Database watermarks
 

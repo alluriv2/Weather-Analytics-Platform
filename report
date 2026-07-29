@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="weather-python"
+POSTGRES_CONTAINER="weather-postgres-local"
 POSTGRES_DB="weather_db"
 POSTGRES_USER="weather_user"
 KAFKA_GROUP="weather-postgres-consumer-python"
@@ -23,6 +24,25 @@ directory_size() {
     fi
 }
 
+port_forward_running() {
+    local service_name="$1"
+    local pid_file="$ROOT_DIR/local-data/run/${service_name}.pid"
+
+    [[ -f "$pid_file" ]] || return 1
+
+    local process_id
+    process_id="$(cat "$pid_file" 2>/dev/null || true)"
+
+    [[ "$process_id" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$process_id" 2>/dev/null || return 1
+
+    local process_command
+    process_command="$(ps -p "$process_id" -o command= 2>/dev/null || true)"
+
+    [[ "$process_command" == *"kubectl port-forward"* ]] \
+        && [[ "$process_command" == *"$NAMESPACE"* ]]
+}
+
 echo "Weather Platform report"
 echo
 
@@ -31,7 +51,6 @@ git_commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unav
 print_value "Git branch:" "$git_branch"
 print_value "Git commit:" "$git_commit"
 print_value "PostgreSQL storage:" "$(directory_size "$ROOT_DIR/local-data/postgres")"
-print_value "Kafka storage:" "$(directory_size "$ROOT_DIR/local-data/kafka")"
 
 docker_status="unavailable"
 
@@ -40,6 +59,59 @@ if docker info >/dev/null 2>&1; then
 fi
 
 print_value "Docker:" "$docker_status"
+
+postgres_status="not created"
+
+if docker inspect "$POSTGRES_CONTAINER" >/dev/null 2>&1; then
+    postgres_status="$(
+        docker inspect "$POSTGRES_CONTAINER" \
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}'
+    )"
+fi
+
+print_value "PostgreSQL:" "$postgres_status"
+
+if [[ "$postgres_status" == "healthy" ]]; then
+    latest_database_record="$(
+        docker exec "$POSTGRES_CONTAINER" \
+            psql \
+            --username "$POSTGRES_USER" \
+            --dbname "$POSTGRES_DB" \
+            --tuples-only \
+            --no-align \
+            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
+            2>/dev/null \
+            || echo "query failed"
+    )"
+else
+    latest_database_record="PostgreSQL stopped"
+fi
+
+print_value "Latest DB record:" "$latest_database_record"
+
+if [[ "$postgres_status" == "healthy" ]]; then
+    echo
+    echo "Database watermarks"
+
+    docker exec "$POSTGRES_CONTAINER" \
+        psql \
+        --username "$POSTGRES_USER" \
+        --dbname "$POSTGRES_DB" \
+        --pset pager=off \
+        --command "
+            SELECT
+                station,
+                source_latest_ts,
+                producer_latest_ts,
+                consumer_latest_ts,
+                database_latest_ts,
+                status
+            FROM ingestion_state
+            ORDER BY station;
+        " \
+        2>/dev/null \
+        || echo "Watermark table is not initialized yet."
+fi
 
 kubernetes_status="unavailable"
 
@@ -85,62 +157,14 @@ done < <(
         --output jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\n"}{end}'
 )
 
-postgres_ready="$(
-    kubectl get statefulset postgres \
-        --namespace "$NAMESPACE" \
-        --output jsonpath='{.status.readyReplicas}' \
-        2>/dev/null \
-        || echo "0"
-)"
-
-if [[ "${postgres_ready:-0}" -ge 1 ]]; then
-    latest_database_record="$(
-        kubectl exec \
-            --namespace "$NAMESPACE" \
-            postgres-0 \
-            -- \
-            psql \
-            --username "$POSTGRES_USER" \
-            --dbname "$POSTGRES_DB" \
-            --tuples-only \
-            --no-align \
-            --command "SELECT COALESCE(MAX(dt)::text, 'empty') FROM weather;" \
-            2>/dev/null \
-            || echo "query failed"
-    )"
-else
-    latest_database_record="PostgreSQL stopped"
-fi
-
 echo
-print_value "Latest DB record:" "$latest_database_record"
-
-if [[ "${postgres_ready:-0}" -ge 1 ]]; then
-    echo
-    echo "Database watermarks"
-
-    kubectl exec \
+print_value "Kafka PVC:" "$(
+    kubectl get pvc kafka-data-kafka-0 \
         --namespace "$NAMESPACE" \
-        postgres-0 \
-        -- \
-        psql \
-        --username "$POSTGRES_USER" \
-        --dbname "$POSTGRES_DB" \
-        --pset pager=off \
-        --command "
-            SELECT
-                station,
-                source_latest_ts,
-                producer_latest_ts,
-                consumer_latest_ts,
-                database_latest_ts,
-                status
-            FROM ingestion_state
-            ORDER BY station;
-        " \
+        --output jsonpath='{.status.phase}' \
         2>/dev/null \
-        || echo "Watermark table is not initialized yet."
-fi
+        || echo "not created"
+)"
 
 kafka_ready="$(
     kubectl get statefulset kafka \
@@ -188,10 +212,17 @@ dashboard_ready="$(
         || echo "0"
 )"
 
-if [[ "${dashboard_ready:-0}" -ge 1 ]]; then
+if [[ "${dashboard_ready:-0}" -ge 1 ]] \
+    && port_forward_running weather-dashboard; then
     echo
     echo "Dashboard: http://127.0.0.1:18050"
+fi
+
+if port_forward_running weather-api; then
     echo "API:       http://127.0.0.1:18000"
+fi
+
+if port_forward_running kafka-ui; then
     echo "Kafka UI:  http://127.0.0.1:18080"
 fi
 

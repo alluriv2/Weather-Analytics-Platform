@@ -6,8 +6,6 @@ namespace: weather-python
 resources:
   - namespace.yaml
   - configmap.yaml
-  - postgres/service.yaml
-  - postgres/statefulset.yaml
   - kafka/service.yaml
   - kafka/statefulset.yaml
   - reconciler/cronjob.yaml
